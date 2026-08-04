@@ -1,0 +1,19 @@
+/*
+ * Typechecks everything the build config leaves out — test files and fixtures.
+ * `npm run build` compiles shippable source only; `npm run typecheck` proves the
+ * tests are type-correct too, so a stale assertion cannot rot unnoticed.
+ */
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"]
+  },
+  // apps/web is checked by its own tsconfig — it needs DOM libs and JSX, which
+  // the Node-targeted settings here deliberately do not enable.
+  "include": ["packages/*/src/**/*"],
+  "references": [{ "path": "./packages/domain" }]
+}
