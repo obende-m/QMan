@@ -12,7 +12,6 @@
     "node": ">=20"
   },
   "scripts": {
-    "prepare": "tsc --build",
     "build": "tsc --build",
     "clean": "tsc --build --clean",
     "test": "vitest run",
