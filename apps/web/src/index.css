@@ -1,0 +1,45 @@
+/* Fonts are self-hosted, not loaded from Google's CDN. QMan is deployed into
+   hospitals with unreliable connectivity, and a display board that falls back to
+   Times New Roman because a font request timed out is a visible failure. */
+@import "@fontsource-variable/inter";
+@import "@fontsource/jetbrains-mono/600.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    font-family: Inter, system-ui, sans-serif;
+    /* DESIGN.md: strict 4px baseline grid. */
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    @apply bg-background text-on-background;
+  }
+
+  /* Focus is never removed, only restyled — staff navigate these screens by
+     keyboard at speed, and clinical software must stay operable without a
+     mouse. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary ring-offset-2 ring-offset-background;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Level 1 elevation from DESIGN.md: white surface, 1px border, soft shadow. */
+  .surface-card {
+    @apply rounded-lg border border-outline-variant bg-surface-container-lowest shadow-card;
+  }
+}

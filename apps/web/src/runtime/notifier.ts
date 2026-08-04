@@ -1,0 +1,219 @@
+import {
+  renderAnnouncement,
+  type StationId,
+  type VisitEvent,
+  type VisitId,
+} from "@qman/domain";
+import type { EventSubscriber } from "../data/event-bus.js";
+import type { OperationsStore } from "../data/operations-store.js";
+import type { ConfigStore } from "../data/config-store.js";
+import { stationName, stationRoom } from "../data/demo-clinic.js";
+import type { NotificationPort } from "./ports.js";
+
+/**
+ * Browser notifications.
+ *
+ * Two audiences with opposite needs, served by the same subscriber shape:
+ *
+ * **Staff** need to know work arrived at *their* station while they are looking
+ * at something else. Filtered to one station, low urgency, collapsible.
+ *
+ * **Patients** need to know it is their turn while their phone is in a pocket.
+ * Filtered to one visit, and marked `requireInteraction` so the notification
+ * stays on screen — a patient who glances down thirty seconds late must still
+ * see it, which is the entire point of not making them watch the board.
+ *
+ * Every attempt records its outcome, so the Command Centre's delivery panel
+ * reflects what actually happened rather than what was intended. A channel that
+ * silently never fires shows as queued attempts that never became delivered.
+ */
+export interface NotifierOptions {
+  readonly notifications: NotificationPort;
+  readonly operations: OperationsStore;
+  readonly config: ConfigStore;
+}
+
+export class Notifier {
+  constructor(private readonly options: NotifierOptions) {}
+
+  get permission() {
+    return this.options.notifications.permission();
+  }
+
+  async requestPermission(): Promise<ReturnType<NotificationPort["permission"]>> {
+    return this.options.notifications.requestPermission();
+  }
+
+  /**
+   * Staff notifications for one station.
+   *
+   * Fires when work *arrives*, not on every event: a queue entry opening is
+   * news, a stage completing is not. Anything more would train staff to
+   * dismiss without reading.
+   */
+  staffSubscriber(stationId: StationId): EventSubscriber {
+    return {
+      name: `staff-notifier:${stationId}`,
+      events: ["visit.queued", "visit.priority_changed"],
+      handle: (event) => {
+        const payload = event.payload as Record<string, unknown>;
+
+        if (event.type === "visit.queued") {
+          if (payload["stationId"] !== stationId) return;
+          const ticket = (payload["queueLabel"] as string) ?? "";
+          const priority = payload["priority"] as string;
+          const urgent = priority === "emergency" || priority === "high";
+
+          void this.#deliver({
+            title: urgent
+              ? `${priority === "emergency" ? "Emergency" : "Urgent"} patient waiting`
+              : "New patient in your queue",
+            body: `${ticket} joined ${stationName(stationId)}.`,
+            tag: `queue-${stationId}`,
+            requireInteraction: urgent,
+            visitId: event.visitId,
+            recipient: "staff",
+          });
+          return;
+        }
+
+        // An escalation at this station needs attention even if the patient was
+        // already waiting.
+        if (payload["to"] === "emergency") {
+          void this.#deliver({
+            title: "Patient escalated to Emergency",
+            body: `A patient at ${stationName(stationId)} now needs urgent attention.`,
+            tag: `escalation-${stationId}`,
+            requireInteraction: true,
+            visitId: event.visitId,
+            recipient: "staff",
+          });
+        }
+      },
+    };
+  }
+
+  /**
+   * Patient notifications for one visit.
+   *
+   * Uses the same rendered announcement text as the voice system, so what the
+   * patient reads on their phone matches what is said aloud in the room
+   * (ADR-030).
+   */
+  patientSubscriber(visitId: VisitId): EventSubscriber {
+    return {
+      name: `patient-notifier:${visitId}`,
+      events: ["visit.called", "visit.routed", "visit.completed"],
+      handle: (event) => {
+        if (event.visitId !== visitId) return;
+
+        const config = this.options.operations.announcementConfig;
+        const payload = event.payload as Record<string, unknown>;
+        const stationId =
+          (payload["stationId"] as StationId | undefined) ??
+          (payload["toStationId"] as StationId | undefined);
+        if (!stationId) return;
+
+        const announcementEvent =
+          event.type === "visit.called"
+            ? (payload["callAttempt"] as number) > 1
+              ? "recalled"
+              : "called"
+            : event.type === "visit.routed"
+              ? "routed"
+              : "completed";
+
+        const body = renderAnnouncement(config, announcementEvent, {
+          ticket: (payload["queueLabel"] as string) ?? "",
+          journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
+          patientName: (payload["patientName"] as string) ?? "",
+          stationName: stationName(stationId),
+          room: stationRoom(stationId),
+          hospitalName: this.options.config.config.profile.name,
+          namePolicy: this.options.config.config.defaults.namePolicy,
+        });
+
+        const isTurn = event.type === "visit.called";
+
+        void this.#deliver({
+          title: isTurn ? "It's your turn" : titleFor(event),
+          body,
+          // One tag per visit: a recall replaces the previous notification
+          // rather than stacking a second one.
+          tag: `visit-${visitId}`,
+          requireInteraction: isTurn,
+          visitId,
+          recipient: "patient",
+        });
+      },
+    };
+  }
+
+  async #deliver(input: {
+    title: string;
+    body: string;
+    tag: string;
+    requireInteraction: boolean;
+    visitId: VisitId | null;
+    recipient: "staff" | "patient";
+  }): Promise<void> {
+    const base = {
+      channel: "browser" as const,
+      visitId: input.visitId,
+      recipient: input.recipient,
+      occurredAt: new Date(),
+    };
+
+    if (!this.options.notifications.supported) {
+      this.options.operations.recordAttempt({
+        ...base,
+        status: "unsupported",
+        error: "This browser cannot show notifications",
+      });
+      return;
+    }
+
+    const permission = this.options.notifications.permission();
+    if (permission !== "granted") {
+      // Declined permission is a choice, not a fault — recorded distinctly so
+      // it never counts against channel health (ADR-029).
+      this.options.operations.recordAttempt({
+        ...base,
+        status: "denied",
+        error: null,
+      });
+      return;
+    }
+
+    try {
+      await this.options.notifications.show({
+        title: input.title,
+        body: input.body,
+        tag: input.tag,
+        requireInteraction: input.requireInteraction,
+      });
+      this.options.operations.recordAttempt({
+        ...base,
+        status: "delivered",
+        error: null,
+      });
+    } catch (error) {
+      this.options.operations.recordAttempt({
+        ...base,
+        status: "failed",
+        error: error instanceof Error ? error.message : "Delivery failed",
+      });
+    }
+  }
+}
+
+function titleFor(event: VisitEvent): string {
+  switch (event.type) {
+    case "visit.routed":
+      return "Your visit has moved on";
+    case "visit.completed":
+      return "Your visit is complete";
+    default:
+      return "Update on your visit";
+  }
+}

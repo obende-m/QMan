@@ -1,0 +1,19 @@
+{
+  "name": "QMan — Track your visit",
+  "short_name": "QMan",
+  "description": "See where you are in the queue, how long is left, and where to go next.",
+  "start_url": "/track.html",
+  "scope": "/track.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f7f9fb",
+  "theme_color": "#003ec7",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
