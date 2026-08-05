@@ -313,6 +313,7 @@ describe("configuration lifecycle", () => {
 
       expect(response.statusCode).toBe(200);
       expect(writer.created).toEqual(["role"]);
+      expect(db.matching("INSERT INTO events")[0]!.params).toContain("config.role_created");
       // Requested as a system role and created as an ordinary one: otherwise a
       // hospital could manufacture roles it cannot delete.
       expect(writer.roles[0]!.isSystem).toBe(false);
@@ -359,6 +360,7 @@ describe("configuration lifecycle", () => {
       });
 
       const [entry] = db.matching("INSERT INTO events");
+      expect(entry!.params).toContain("config.role_updated");
       const payload = JSON.parse(
         entry!.params.find((p) => typeof p === "string" && p.includes("before")) as string,
       );
@@ -404,6 +406,7 @@ describe("configuration lifecycle", () => {
 
       expect(response.statusCode).toBe(200);
       expect(writer.deleted).toEqual(["role"]);
+      expect(db.matching("INSERT INTO events")[0]!.params).toContain("config.role_deleted");
     });
 
     it("requires admin.users for every role operation", async () => {

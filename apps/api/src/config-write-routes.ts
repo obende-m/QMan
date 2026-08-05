@@ -776,7 +776,7 @@ export function registerConfigWriteRoutes(
         }
       },
       describe: (_before, after) => ({
-        type: "config.profile_updated",
+        type: "config.role_created",
         summary: `Role ${after.find((r) => r.id === id)?.name ?? id} added`,
         path: `roles.${id}`,
         before: null,
@@ -813,7 +813,7 @@ export function registerConfigWriteRoutes(
        * answerable only if the grant is recorded on both sides.
        */
       describe: (before, after) => ({
-        type: "config.profile_updated",
+        type: "config.role_updated",
         summary: `Role ${after.find((r) => r.id === id)?.name ?? id} permissions updated`,
         path: `roles.${id}`,
         before: before.find((r) => r.id === id)?.permissions ?? null,
@@ -843,7 +843,7 @@ export function registerConfigWriteRoutes(
       apply: (roles) => roles.filter((role) => role.id !== id || role.isSystem),
       persist: (tx) => deps.writer.deleteRole(tx, deps.resolveHospital(request), id),
       describe: (before) => ({
-        type: "config.profile_updated",
+        type: "config.role_deleted",
         summary: `Role ${before.find((r) => r.id === id)?.name ?? id} deleted`,
         path: `roles.${id}`,
         before: before.find((r) => r.id === id) ?? null,

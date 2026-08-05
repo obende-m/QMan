@@ -79,6 +79,17 @@ export const ADMIN_EVENT_TYPES = [
   "config.ticket_template_updated",
   "config.announcement_updated",
   "config.profile_updated",
+  /**
+   * Role changes are their own types rather than profile changes.
+   *
+   * "Who gave the reception role the ability to change SLAs" is a question
+   * asked during an investigation, and it is answerable only if the entries can
+   * be found. Filed under a general profile change they are findable only by
+   * someone who already knows to look there.
+   */
+  "config.role_created",
+  "config.role_updated",
+  "config.role_deleted",
 ] as const;
 
 export const SECURITY_EVENT_TYPES = [
