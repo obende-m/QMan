@@ -18,11 +18,8 @@ import { JourneyTimeline } from "../../components/ui/JourneyTimeline.js";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
-import {
-  currentWorkflow,
-  stationName,
-  stationRoom,
-} from "../../data/demo-clinic.js";
+import { stationName, stationRoom } from "../../data/clinic-projections.js";
+import { useConfig } from "../../data/useConfig.js";
 import { journeySteps } from "../../data/journey-steps.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
 import type { EventBus } from "../../data/event-bus.js";
@@ -59,6 +56,8 @@ export function PatientJourney({
   alerts,
 }: PatientJourneyProps) {
   const clinic = useClinic(injected);
+  const config = useConfig();
+  const workflow = config.defaultWorkflow();
   const now = useNow(1000);
   const version = clinic.getVersion();
   const connection = useConnectionMonitor({ signal: clinic.heartbeat });
@@ -82,7 +81,7 @@ export function PatientJourney({
     );
   }
 
-  const { visit } = found;
+  const visit = found;
   const entry = visit.currentEntry;
   const stationId = visit.currentStationId;
   const position = clinic.positionOf(visit.id);
@@ -134,15 +133,15 @@ export function PatientJourney({
               It's your turn
             </p>
             <p className="mt-1 text-body-md text-on-surface">
-              Please go to {stationName(stationId!)}
-              {stationRoom(stationId!) ? ` — ${stationRoom(stationId!)}` : ""}.
+              Please go to {stationName(config.config, stationId!)}
+              {stationRoom(config.config, stationId!) ? ` — ${stationRoom(config.config, stationId!)}` : ""}.
             </p>
           </>
         ) : (
           <>
             <Hourglass aria-hidden="true" className="mx-auto size-7 text-warning" />
             <p className="mt-2 text-title-md font-semibold text-on-surface">
-              Waiting for {stationName(stationId!)}
+              Waiting for {stationName(config.config, stationId!)}
             </p>
             {ahead !== null && (
               <p className="mt-1 text-body-md text-on-surface-variant">
@@ -217,7 +216,7 @@ export function PatientJourney({
           <Metric
             icon={<DoorOpen className="size-4" />}
             label="Go to"
-            value={(stationId && stationRoom(stationId)) ?? "—"}
+            value={(stationId && stationRoom(config.config, stationId)) ?? "—"}
           />
         </section>
       )}
@@ -235,7 +234,9 @@ export function PatientJourney({
           Your journey
         </h2>
         <div className="mt-4">
-          <JourneyTimeline steps={journeySteps(visit, currentWorkflow())} />
+          {workflow && (
+            <JourneyTimeline steps={journeySteps(visit, workflow, config.config)} />
+          )}
         </div>
       </section>
 

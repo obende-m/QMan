@@ -56,6 +56,7 @@ export function CommandCentre({
   onOpenStation,
 }: CommandCentreProps = {}) {
   const clinic = useClinic(injected);
+  const config = useConfig();
   const ops = useOperations(injectedOps);
   const now = useNow(2000);
   const version = clinic.getVersion() + ops.getVersion();

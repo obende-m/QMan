@@ -364,10 +364,7 @@ function AuditLog({
                     })}
                   </td>
                   <td className="px-gutter py-3 text-body-sm text-on-surface">
-                    {entry.actorId
-                      ? (auth.account(entry.actorId)?.displayName ??
-                        staffLabel(entry.actorId))
-                      : "—"}
+                    {entry.actorId ? staffLabel(entry.actorId) : "—"}
                   </td>
                   <td className="px-gutter py-3 text-body-md text-on-surface">
                     {entry.summary}
