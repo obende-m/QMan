@@ -7,7 +7,7 @@ import {
 } from "../../components/ui/ConnectionStatus.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
-import { BRANCH, stationName, stationRoom } from "../../data/demo-clinic.js";
+import { stationName, stationRoom } from "../../data/clinic-projections.js";
 import {
   operationsStore,
   type OperationsStore,
@@ -163,16 +163,16 @@ function StationPanel({
 
   return (
     <section
-      aria-label={`${stationName(stationId)} queue`}
+      aria-label={`${stationName(config.config, stationId)} queue`}
       className="flex flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface-container-low"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 border-b border-outline-variant bg-surface-container px-6 py-4">
         <h2 className="text-headline-lg font-semibold tracking-tight text-on-surface">
-          {stationName(stationId)}
+          {stationName(config.config, stationId)}
         </h2>
-        {config.showRoom && stationRoom(stationId) && (
+        {config.showRoom && stationRoom(config.config, stationId) && (
           <p className="font-mono text-label-caps uppercase tracking-widest text-on-surface-variant">
-            {stationRoom(stationId)}
+            {stationRoom(config.config, stationId)}
           </p>
         )}
       </div>

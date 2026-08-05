@@ -8,7 +8,7 @@ import {
 import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
-import { stationName, stationRoom } from "../data/demo-clinic.js";
+import { stationName, stationRoom } from "../data/clinic-projections.js";
 import type { ChimePort, SpeechPort } from "./ports.js";
 
 /**
@@ -71,8 +71,8 @@ export class VoiceAnnouncer {
       ticket: (payload["queueLabel"] as string) ?? "",
       journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
       patientName: (payload["patientName"] as string) ?? "",
-      stationName: stationName(stationId),
-      room: stationRoom(stationId),
+      stationName: stationName(this.options.config.config, stationId),
+      room: stationRoom(this.options.config.config, stationId),
       hospitalName: this.options.config.config.profile.name,
       namePolicy: this.options.config.config.defaults.namePolicy,
     });

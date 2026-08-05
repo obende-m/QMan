@@ -7,7 +7,7 @@ import {
 import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
-import { stationName, stationRoom } from "../data/demo-clinic.js";
+import { stationName, stationRoom } from "../data/clinic-projections.js";
 import type { NotificationPort } from "./ports.js";
 
 /**
@@ -68,7 +68,7 @@ export class Notifier {
             title: urgent
               ? `${priority === "emergency" ? "Emergency" : "Urgent"} patient waiting`
               : "New patient in your queue",
-            body: `${ticket} joined ${stationName(stationId)}.`,
+            body: `${ticket} joined ${stationName(this.options.config.config, stationId)}.`,
             tag: `queue-${stationId}`,
             requireInteraction: urgent,
             visitId: event.visitId,
@@ -82,7 +82,7 @@ export class Notifier {
         if (payload["to"] === "emergency") {
           void this.#deliver({
             title: "Patient escalated to Emergency",
-            body: `A patient at ${stationName(stationId)} now needs urgent attention.`,
+            body: `A patient at ${stationName(this.options.config.config, stationId)} now needs urgent attention.`,
             tag: `escalation-${stationId}`,
             requireInteraction: true,
             visitId: event.visitId,
@@ -127,8 +127,8 @@ export class Notifier {
           ticket: (payload["queueLabel"] as string) ?? "",
           journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
           patientName: (payload["patientName"] as string) ?? "",
-          stationName: stationName(stationId),
-          room: stationRoom(stationId),
+          stationName: stationName(this.options.config.config, stationId),
+          room: stationRoom(this.options.config.config, stationId),
           hospitalName: this.options.config.config.profile.name,
           namePolicy: this.options.config.config.defaults.namePolicy,
         });

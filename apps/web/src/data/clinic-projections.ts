@@ -224,3 +224,15 @@ export function estimatedWaitForNewArrival(
     configuredServiceMillis: serviceEstimateFor(configuration, stationId),
   });
 }
+
+/**
+ * How a member of staff is identified on a dashboard.
+ *
+ * TODO(backend): there is no user directory endpoint, so a workload panel can
+ * only show the identifier it was given. `GET /api/v1/users` would let this
+ * show names. Deliberately not fabricated: an invented name on a staffing
+ * report is worse than an identifier nobody has to interpret.
+ */
+export function staffLabel(userId: string | null): string {
+  return userId ?? "Unassigned";
+}

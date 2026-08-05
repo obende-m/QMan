@@ -6,8 +6,8 @@ import { StatusChip, priorityChip } from "../../components/ui/StatusChip.js";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import { formatDuration } from "../../data/useClinic.js";
-import type { DemoVisit } from "../../data/demo-clinic.js";
-import { stationName } from "../../data/demo-clinic.js";
+import type { Visit } from "@qman/domain";
+import { stationName } from "../../data/clinic-projections.js";
 
 /**
  * Priority Patients.
@@ -22,7 +22,7 @@ import { stationName } from "../../data/demo-clinic.js";
  * confusion ADR-006 exists to prevent.
  */
 export interface PriorityPatientsProps {
-  visits: readonly DemoVisit[];
+  visits: readonly Visit[];
   now: Date;
   onOpen?: (visitId: string) => void;
 }
@@ -91,7 +91,7 @@ function PriorityRow({
   now,
   onOpen,
 }: {
-  entry: DemoVisit;
+  entry: Visit;
   now: Date;
   onOpen?: (visitId: string) => void;
 }) {
@@ -155,7 +155,7 @@ function PriorityRow({
   );
 }
 
-function isBreaching(entry: DemoVisit, now: Date): boolean {
+function isBreaching(entry: Visit, now: Date): boolean {
   const priority = entry.visit.priority;
   if (priority !== "emergency" && priority !== "high") return false;
   const minutes = (now.getTime() - entry.arrivedAt.getTime()) / 60_000;
