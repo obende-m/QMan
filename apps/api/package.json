@@ -8,7 +8,8 @@
     "build": "tsc --build",
     "start": "node dist/index.js",
     "dev": "tsc --build && node dist/index.js",
-    "migrate": "tsc --build && node dist/migrate.js"
+    "migrate": "tsc --build && node dist/migrate.js",
+    "verify:db": "vitest run src/integration.test.ts --root ../.."
   },
   "dependencies": {
     "@qman/domain": "*",
