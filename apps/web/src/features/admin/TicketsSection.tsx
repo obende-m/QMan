@@ -22,7 +22,7 @@ import { cn } from "../../components/ui/cn.js";
 import type { ConfigStore } from "../../data/config-store.js";
 import { inputClass } from "../../data/useConfig.js";
 import { Field, Toggle } from "./StationsSection.js";
-import { ProblemList, SaveFeedback, useSaveFeedback } from "./shared.js";
+import { ProblemList, SaveFeedback, useSaveFeedback , DraftInput} from "./shared.js";
 import { PrintableTicket } from "../printing/PrintableTicket.js";
 
 /**
@@ -132,11 +132,11 @@ export function TicketsSection({
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Template name">
-                  <input
-                    className={inputClass}
-                    value={selected.name}
-                    onChange={(e) => save({ name: e.target.value })}
-                  />
+                  <DraftInput
+                className={inputClass}
+                value={selected.name}
+                onCommit={(next) => save({ name: next })}
+              />
                 </Field>
                 <Field label="Paper">
                   <select
@@ -223,28 +223,28 @@ export function TicketsSection({
                   <code className="font-mono">{"{branch}"}</code>
                 </p>
                 <Field label="Instructions">
-                  <input
-                    className={inputClass}
-                    value={selected.instructions}
-                    onChange={(e) => save({ instructions: e.target.value })}
-                  />
+                  <DraftInput
+                className={inputClass}
+                value={selected.instructions}
+                onCommit={(next) => save({ instructions: next })}
+              />
                 </Field>
                 <Field label="Footer message">
-                  <input
-                    className={inputClass}
-                    value={selected.footer}
-                    onChange={(e) => save({ footer: e.target.value })}
-                  />
+                  <DraftInput
+                className={inputClass}
+                value={selected.footer}
+                onCommit={(next) => save({ footer: next })}
+              />
                 </Field>
                 <Field
                   label="Tracking URL"
                   hint="Encoded into the QR code, with the journey code appended."
                 >
-                  <input
-                    className={inputClass}
-                    value={selected.trackingUrl}
-                    onChange={(e) => save({ trackingUrl: e.target.value })}
-                  />
+                  <DraftInput
+                className={inputClass}
+                value={selected.trackingUrl}
+                onCommit={(next) => save({ trackingUrl: next })}
+              />
                 </Field>
               </section>
 

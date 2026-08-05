@@ -14,7 +14,7 @@ import { cn } from "../../components/ui/cn.js";
 import type { ConfigStore } from "../../data/config-store.js";
 import { inputClass } from "../../data/useConfig.js";
 import { Field, Toggle } from "./StationsSection.js";
-import { ProblemList, SaveFeedback, useSaveFeedback } from "./shared.js";
+import { ProblemList, SaveFeedback, useSaveFeedback , DraftInput} from "./shared.js";
 
 export function DisplayBoardsSection({
   store,
@@ -142,11 +142,11 @@ function BoardEditor({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Board name">
-            <input
-              className={inputClass}
-              value={board.name}
-              onChange={(e) => save({ name: e.target.value })}
-            />
+            <DraftInput
+                className={inputClass}
+                value={board.name}
+                onCommit={(next) => save({ name: next })}
+              />
           </Field>
           <Field
             label="Waiting tickets to show"

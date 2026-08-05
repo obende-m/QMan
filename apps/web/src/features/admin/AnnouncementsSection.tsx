@@ -96,10 +96,10 @@ export function AnnouncementsSection({
 
           <div className="grid gap-4 sm:grid-cols-3">
             <Field label="Language" hint="Used by the speech voice, e.g. en-NG.">
-              <input
+              <DraftInput
                 className={inputClass}
                 value={draft.language}
-                onChange={(e) => apply({ language: e.target.value })}
+                onCommit={(next) => apply({ language: next })}
               />
             </Field>
             <Field label="Chime" hint="Played before the announcement.">
@@ -146,14 +146,14 @@ export function AnnouncementsSection({
             {ANNOUNCEMENT_EVENTS.map((event) => (
               <div key={event}>
                 <Field label={EVENT_LABELS[event]}>
-                  <input
+                  <DraftInput
                     className={cn(inputClass, "font-mono")}
                     value={draft.templates[event]}
-                    onChange={(e) =>
+                    onCommit={(next) =>
                       apply({
                         templates: {
                           ...draft.templates,
-                          [event]: e.target.value,
+                          [event]: next,
                         },
                       })
                     }

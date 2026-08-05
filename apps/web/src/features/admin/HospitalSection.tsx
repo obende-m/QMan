@@ -9,7 +9,7 @@ import { StatusChip } from "../../components/ui/StatusChip.js";
 import type { ConfigStore } from "../../data/config-store.js";
 import { inputClass } from "../../data/useConfig.js";
 import { Field } from "./StationsSection.js";
-import { ProblemList, SaveFeedback, useSaveFeedback } from "./shared.js";
+import { ProblemList, SaveFeedback, useSaveFeedback , DraftInput} from "./shared.js";
 
 export function HospitalSection({
   store,
@@ -30,35 +30,31 @@ export function HospitalSection({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Name">
-              <input
+              <DraftInput
                 className={inputClass}
                 value={profile.name}
-                onChange={(e) => report(store.updateProfile({ name: e.target.value }))}
+                onCommit={(next) => report(store.updateProfile({ name: next }))}
               />
             </Field>
             <Field label="Code">
-              <input
+              <DraftInput
                 className={inputClass}
                 value={profile.code}
-                onChange={(e) =>
-                  report(store.updateProfile({ code: e.target.value.toUpperCase() }))
-                }
+                onCommit={(next) => report(store.updateProfile({ code: next.toUpperCase() }))}
               />
             </Field>
             <Field label="Timezone" hint="Determines when daily queue series roll over.">
-              <input
+              <DraftInput
                 className={inputClass}
                 value={profile.timezone}
-                onChange={(e) => report(store.updateProfile({ timezone: e.target.value }))}
+                onCommit={(next) => report(store.updateProfile({ timezone: next }))}
               />
             </Field>
             <Field label="Support phone" hint="Shown to patients who need help.">
-              <input
+              <DraftInput
                 className={inputClass}
                 value={profile.supportPhone ?? ""}
-                onChange={(e) =>
-                  report(store.updateProfile({ supportPhone: e.target.value || null }))
-                }
+                onCommit={(next) => report(store.updateProfile({ supportPhone: next || null }))}
               />
             </Field>
             <Field label="Brand colour" hint="Applied to patient-facing surfaces.">
@@ -72,13 +68,11 @@ export function HospitalSection({
                   }
                   className="size-10 shrink-0 cursor-pointer rounded border border-outline-variant bg-transparent"
                 />
-                <input
-                  className={inputClass}
-                  value={profile.brandColor}
-                  onChange={(e) =>
-                    report(store.updateProfile({ brandColor: e.target.value }))
-                  }
-                />
+                <DraftInput
+                className={inputClass}
+                value={profile.brandColor}
+                onCommit={(next) => report(store.updateProfile({ brandColor: next }))}
+              />
               </div>
             </Field>
           </div>

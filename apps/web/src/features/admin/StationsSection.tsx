@@ -16,7 +16,7 @@ import { StatusChip } from "../../components/ui/StatusChip.js";
 import { cn } from "../../components/ui/cn.js";
 import type { ConfigStore } from "../../data/config-store.js";
 import { inputClass, labelClass } from "../../data/useConfig.js";
-import { ProblemList, SaveFeedback, useSaveFeedback } from "./shared.js";
+import { ProblemList, SaveFeedback, useSaveFeedback , DraftInput} from "./shared.js";
 
 const RESET_OPTIONS: ReadonlyArray<{ value: QueueResetStrategy; label: string }> = [
   { value: "daily", label: "Every day" },
@@ -176,28 +176,28 @@ function StationEditor({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Name">
-            <input
-              className={inputClass}
-              value={station.name}
-              onChange={(e) => save({ name: e.target.value })}
-            />
+            <DraftInput
+                className={inputClass}
+                value={station.name}
+                onCommit={(next) => save({ name: next })}
+              />
           </Field>
           <Field
             label="Short code"
             hint="Used by the {station} token in queue numbers."
           >
-            <input
-              className={inputClass}
-              value={station.code}
-              onChange={(e) => save({ code: e.target.value.toUpperCase() })}
-            />
+            <DraftInput
+                className={inputClass}
+                value={station.code}
+                onCommit={(next) => save({ code: next.toUpperCase() })}
+              />
           </Field>
           <Field label="Room" hint="Shown to patients so they know where to go.">
-            <input
+            <DraftInput
               className={inputClass}
               value={station.room ?? ""}
               placeholder="e.g. Room 12"
-              onChange={(e) => save({ room: e.target.value || null })}
+              onCommit={(next) => save({ room: next || null })}
             />
           </Field>
           <Field label="Staff on station" hint="Sizes the wait estimate.">
@@ -249,14 +249,14 @@ function StationEditor({
               label="Template"
               hint="Tokens: {n} {n:3} {station} {journey} {yyyy} {mm} {dd}"
             >
-              <input
+              <DraftInput
                 className={cn(inputClass, "font-mono")}
                 value={station.queueNumber.template}
-                onChange={(e) =>
+                onCommit={(next) =>
                   save({
                     queueNumber: {
                       ...station.queueNumber,
-                      template: e.target.value,
+                      template: next,
                     },
                   })
                 }
