@@ -26,6 +26,9 @@ import {
   migrate,
   MigrationIntegrityError,
   PostgresAccountRepository,
+  PostgresBoardDirectory,
+  PostgresConfigurationRepository,
+  PostgresConfigurationWriter,
   PostgresIdempotencyRepository,
   PostgresLockoutRepository,
   PostgresSessionRepository,
@@ -423,6 +426,137 @@ suite("persistence against real PostgreSQL", () => {
       const allocator = new PostgresTicketAllocator(db);
       await allocator.advanceTo(STATION as never, "2026-03-10", 10);
       expect(await allocator.next(STATION as never, "2026-03-10")).toBe(501);
+    });
+  });
+
+  describe("configuration repository", () => {
+    it("assembles the whole configuration in one read", async () => {
+      const configuration = await new PostgresConfigurationRepository(db).load(HOSPITAL);
+
+      expect(configuration).not.toBeNull();
+      expect(configuration!.profile.name).toBe("Ikeja General Hospital");
+      expect(configuration!.branches.map((b) => b.code)).toContain("MAIN");
+      expect(configuration!.stations.map((s) => s.name)).toContain("Consultation");
+      // Nested value assembled from three columns, so a mapping slip shows.
+      expect(configuration!.stations[0]!.sla.targetWaitMillis).toBe(1_200_000);
+      expect(configuration!.stations[0]!.queueNumber.template).toBe("A-{n:3}");
+    });
+
+    it("returns null for a hospital that does not exist", async () => {
+      const configuration = await new PostgresConfigurationRepository(db).load(
+        "99999999-9999-9999-9999-999999999999",
+      );
+      expect(configuration).toBeNull();
+    });
+
+    /** text[] of permission names must survive as an array, not a string. */
+    it("reads roles with their permission grants", async () => {
+      const roles = await new PostgresConfigurationRepository(db).loadRoles(HOSPITAL);
+      expect(roles).toHaveLength(1);
+      expect(roles[0]!.permissions).toEqual(["visit.create", "queue.call"]);
+      expect(roles[0]!.name).toBe("Reception");
+    });
+  });
+
+  describe("configuration writer", () => {
+    const writer = new PostgresConfigurationWriter();
+
+    it("persists a station change and reads it back", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+      const before = await repository.load(HOSPITAL);
+      const station = before!.stations[0]!;
+
+      await db.transaction((tx) =>
+        writer.updateStation(
+          tx,
+          {
+            ...station,
+            name: "Consultation A",
+            sla: { targetWaitMillis: 900_000, saturationPoint: 15 },
+          },
+          new Date(),
+        ),
+      );
+
+      const after = await repository.load(HOSPITAL);
+      expect(after!.stations[0]!.name).toBe("Consultation A");
+      expect(after!.stations[0]!.sla.targetWaitMillis).toBe(900_000);
+      // Untouched fields must survive a partial edit.
+      expect(after!.stations[0]!.queueNumber.template).toBe("A-{n:3}");
+    });
+
+    /**
+     * The whole point of the transaction. A write that fails after another has
+     * already landed must leave neither.
+     */
+    it("leaves nothing behind when the unit of work fails", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+      const station = (await repository.load(HOSPITAL))!.stations[0]!;
+
+      await expect(
+        db.transaction(async (tx) => {
+          await writer.updateStation(tx, { ...station, name: "Rolled Back" }, new Date());
+          throw new Error("validation failed after the write");
+        }),
+      ).rejects.toThrow();
+
+      const after = await repository.load(HOSPITAL);
+      expect(after!.stations[0]!.name).toBe("Consultation A");
+    });
+
+    it("upserts hospital defaults whether or not a row exists", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+
+      await db.transaction((tx) =>
+        writer.updateDefaults(
+          tx,
+          HOSPITAL,
+          { namePolicy: "first_name", ticketTemplateId: "t-1" },
+          new Date(),
+        ),
+      );
+      expect((await repository.load(HOSPITAL))!.defaults.namePolicy).toBe("first_name");
+
+      await db.transaction((tx) =>
+        writer.updateDefaults(
+          tx,
+          HOSPITAL,
+          { namePolicy: "ticket_only", ticketTemplateId: "t-2" },
+          new Date(),
+        ),
+      );
+      const after = await repository.load(HOSPITAL);
+      expect(after!.defaults.namePolicy).toBe("ticket_only");
+      expect(after!.defaults.ticketTemplateId).toBe("t-2");
+    });
+
+    it("persists the profile", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+      const profile = (await repository.load(HOSPITAL))!.profile;
+
+      await db.transaction((tx) =>
+        writer.updateProfile(tx, { ...profile, name: "Ikeja General" }, new Date()),
+      );
+
+      expect((await repository.load(HOSPITAL))!.profile.name).toBe("Ikeja General");
+    });
+  });
+
+  describe("board directory", () => {
+    it("resolves a board to its branch and stations", async () => {
+      const boardId = "77777777-7777-7777-7777-777777777777";
+      await db.query(
+        `INSERT INTO display_boards (id, branch_id, name, station_ids)
+         VALUES ($1, $2, $3, $4)`,
+        [boardId, BRANCH, "Main Waiting Area", [STATION]],
+      );
+
+      const board = await new PostgresBoardDirectory(db).find(boardId);
+      expect(board?.branchId).toBe(BRANCH);
+      expect(board?.stationIds).toEqual([STATION]);
+      expect(await new PostgresBoardDirectory(db).find(
+        "88888888-8888-8888-8888-888888888888",
+      )).toBeNull();
     });
   });
 

@@ -13,6 +13,7 @@ import {
   PostgresAccountRepository,
   PostgresBoardDirectory,
   PostgresConfigurationRepository,
+  PostgresConfigurationWriter,
   PostgresEventRepository,
   PostgresIdempotencyRepository,
   PostgresLockoutRepository,
@@ -20,6 +21,7 @@ import {
   PostgresVisitRepository,
 } from "@qman/persistence";
 import { EventStream } from "./stream.js";
+import { ConfigurationService } from "./configuration-service.js";
 import { AuthService, createDatabaseLockoutStore } from "./auth.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { connect } from "./database.js";
@@ -48,6 +50,7 @@ async function main(): Promise<void> {
     newId: () => randomUUID(),
   });
 
+  const configurationWriter = new PostgresConfigurationWriter();
   const stream = new EventStream();
   const app = buildServer({
     auth,
@@ -58,6 +61,16 @@ async function main(): Promise<void> {
     allowedOrigins: config.allowedOrigins,
     https: config.secureCookies,
     configuration: { configuration: new PostgresConfigurationRepository(db) },
+    configurationWrites: {
+      service: new ConfigurationService({ db, writer: configurationWriter, now }),
+      writer: configurationWriter,
+      idempotency: {
+        repository: new PostgresIdempotencyRepository(db),
+        resolveHospital: () => config.hospitalId,
+        logger,
+        now,
+      },
+    },
     publicSurfaces: {
       visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
       boards: new PostgresBoardDirectory(db),

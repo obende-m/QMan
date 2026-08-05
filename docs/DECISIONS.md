@@ -1253,3 +1253,67 @@ every request, rather than into the database.
 for usernames that do not exist. Recording them only for real accounts would
 make the table an oracle for which usernames are real — the exact thing the
 uniform failure message exists to prevent.
+
+## ADR-054 — Configuration is validated whole, written narrow
+
+**Decision.** Every configuration write follows one path: load the entire
+configuration, apply the caller's change to produce the configuration that
+*would* result, hand that to `validateHospitalConfiguration`, and only then
+persist the single entity that moved. All of it inside one transaction, with the
+audit entry written in the same unit of work.
+
+**Why validate the whole thing.** Most of the rules that matter are
+relationships between entities, not properties of one. A workflow stage pointing
+at a station that has just been disabled; a display board showing a station that
+is no longer public; a default ticket template that has been renamed away. None
+of those are visible to a check that sees only the entity being edited, and all
+of them break a clinic quietly — the configuration saves, and the failure
+surfaces the next morning when a patient cannot be routed.
+
+**Why write narrow.** Persisting the whole configuration on every save would
+make each edit a last-write-wins overwrite of every field the administrator
+never looked at. Two people editing different stations in the same minute would
+each silently revert the other.
+
+**Why the transaction is not optional.** The read that validation depends on and
+the write it authorises must be one unit of work. Otherwise two administrators
+saving at the same moment each validate against a configuration the other is in
+the middle of replacing, and both write — producing a state neither of them
+approved and which validation would have rejected.
+
+**Why audit is inside it.** An entry written after the transaction is an entry
+that can be missing when the process dies between the two, and an audit trail
+with holes is worse than no audit trail, because it is trusted. A rejected change
+writes nothing at all: not the entity, and not an entry claiming it happened.
+
+**Why a rejected change is 422 and returned rather than thrown.** The request was
+well-formed and the caller was entitled to make it; what failed was the resulting
+state. Throwing would roll back identically but would also be logged as a server
+fault, and burying real faults among administrators mistyping an SLA is how
+alerting stops being read.
+
+## ADR-055 — Routes follow entities, not settings screens
+
+**Decision.** There is no `/slas` endpoint and no `/privacy` endpoint. An SLA is
+persisted through `PATCH /stations/:id`, and a name policy through
+`PATCH /display-boards/:id`, `PATCH /ticket-templates/:id` or
+`PATCH /settings` depending on which one it belongs to.
+
+**Why.** Both were reasonable suggestions, and both would have created a second
+route writing columns an existing route already owns. Two ways to change one
+value is the shape that produces "the screen says a thirty minute target and the
+database says twenty" — and the version that is wrong is always the one nobody
+tested.
+
+Settings *screens* can still be organised however an administrator finds
+clearest. A screen is free to send one patch per entity it touched; what it must
+not do is reach a column by a path that bypasses the validation and audit the
+owning route performs.
+
+**Consequence for audit.** Because a route covers several intentions, the audit
+entry names the intention rather than the route. A patch carrying `sla` records
+`config.sla_updated`; one carrying `queueNumber` records
+`config.queue_numbering_updated`; a change to a board's name policy records
+`config.privacy_updated` rather than `config.display_board_updated`. The question
+asked months later is "who changed this SLA", and an entry saying only "a station
+was updated" cannot answer it.

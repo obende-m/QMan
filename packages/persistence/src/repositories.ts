@@ -193,13 +193,6 @@ export class PostgresVisitRepository implements VisitRepository {
   }
 
   /**
-   * Writes the visit, its queue entries and its events in one transaction.
-   *
-   * They land together or not at all. A queue entry without its visit is a
-   * patient in a queue nobody can look up; an event without its state change is
-   * a lie in the audit trail.
-   */
-  /**
    * Looks up a visit by the hash of its tracking token.
    *
    * Open visits only. A token for a closed visit resolving would leave a
@@ -215,6 +208,13 @@ export class PostgresVisitRepository implements VisitRepository {
     return this.#hydrate([row]).then((visits) => visits[0] ?? null);
   }
 
+  /**
+   * Writes the visit, its queue entries and its events in one transaction.
+   *
+   * They land together or not at all. A queue entry without its visit is a
+   * patient in a queue nobody can look up; an event without its state change is
+   * a lie in the audit trail.
+   */
   async save(
     visit: Visit,
     events: readonly NewEvent[],
@@ -324,7 +324,7 @@ export class PostgresVisitRepository implements VisitRepository {
 const EVENT_COLUMNS = `id, hospital_id, branch_id, sequence, category, type,
   visit_id, correlation_id, actor_id, occurred_at, recorded_at, payload, summary`;
 
-async function appendEvents(
+export async function appendEvents(
   tx: SqlExecutor,
   events: readonly NewEvent[],
 ): Promise<void> {

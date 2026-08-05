@@ -28,7 +28,7 @@ import {
 } from "@qman/domain";
 import { toStationConfig, toWorkflow } from "./mappers.js";
 import type { StationRow, WorkflowRow, WorkflowStageRow } from "./rows.js";
-import type { Database } from "./sql.js";
+import type { Database, SqlExecutor } from "./sql.js";
 
 export interface HospitalRow {
   id: string;
@@ -103,7 +103,13 @@ interface RoleRow {
 }
 
 export class PostgresConfigurationRepository implements ConfigurationRepository {
-  constructor(private readonly db: Database) {}
+  /**
+   * A `SqlExecutor`, not a `Database`. Reads need only `query`, and taking the
+   * narrower port means the same repository can run against a transaction —
+   * which is what lets a write load, validate and persist without another
+   * writer changing the configuration underneath it.
+   */
+  constructor(private readonly db: SqlExecutor) {}
 
   /**
    * Permissions the domain does not recognise are dropped, matching how an
@@ -158,7 +164,7 @@ export class PostgresConfigurationRepository implements ConfigurationRepository 
           `SELECT st.* FROM workflow_stages st
            JOIN workflows w ON w.id = st.workflow_id
            JOIN branches b ON b.id = w.branch_id
-           WHERE b.hospital_id = $1 ORDER BY st.position`,
+           WHERE b.hospital_id = $1 ORDER BY st.sequence`,
           [hospitalId],
         ),
         this.db.query<DisplayBoardRow>(

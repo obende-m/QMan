@@ -17,3 +17,4 @@ export * from "./pg.js";
 export * from "./migrator.js";
 export * from "./repositories.js";
 export * from "./configuration.js";
+export * from "./configuration-writer.js";

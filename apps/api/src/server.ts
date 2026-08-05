@@ -36,6 +36,7 @@ import { registerQueueRoutes, type QueueRouteDependencies } from "./queue-routes
 import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
 import { registerPublicRoutes, type PublicRouteDependencies } from "./public-routes.js";
 import { registerConfigRoutes, type ConfigRouteDependencies } from "./config-routes.js";
+import { registerConfigWriteRoutes, type ConfigWriteDependencies } from "./config-write-routes.js";
 import { V1 } from "./version.js";
 
 export { SESSION_COOKIE };
@@ -68,6 +69,11 @@ export interface ServerOptions {
   readonly stream?: EventStream;
   /** The configuration read. Registered only when its repository exists. */
   readonly configuration?: Omit<ConfigRouteDependencies, "guards" | "logger" | "resolveHospital">;
+  /** Configuration writes. Registered only when the service exists. */
+  readonly configurationWrites?: Omit<
+    ConfigWriteDependencies,
+    "guards" | "logger" | "resolveHospital"
+  >;
   /** The two unauthenticated surfaces. Registered only when configured. */
   readonly publicSurfaces?: Omit<PublicRouteDependencies, "logger" | "now">;
   /** Business routes are registered only when their repositories exist. */
@@ -363,6 +369,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   if (options.configuration) {
     registerConfigRoutes(app, {
       ...options.configuration,
+      guards,
+      logger,
+      resolveHospital: options.resolveHospital,
+    });
+  }
+
+  if (options.configurationWrites) {
+    registerConfigWriteRoutes(app, {
+      ...options.configurationWrites,
       guards,
       logger,
       resolveHospital: options.resolveHospital,
