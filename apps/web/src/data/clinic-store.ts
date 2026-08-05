@@ -228,7 +228,9 @@ export class ClinicStore {
   /** Destinations a station may send its current patient to. */
   destinationsFrom(stationId: StationId) {
     const workflow = this.config.defaultWorkflow();
-    if (workflow === undefined) return [];
+    // One shape whether or not a workflow exists: a caller rendering buttons
+    // should not have to tell an empty list from a missing one.
+    if (workflow === undefined) return { options: [], canComplete: false };
     return availableDestinations(workflow, stationId);
   }
 
