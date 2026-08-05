@@ -12,8 +12,10 @@
 --    what the hospital did, queryable on its own terms. This is not event
 --    sourcing: visits and queue entries are ordinary rows and remain the
 --    working state. The log runs alongside them as the narrative.
-
-BEGIN;
+--
+-- Migrations do not manage transactions. The runner wraps the whole run in one,
+-- so a failure anywhere leaves the schema exactly as it was rather than half
+-- converted. A BEGIN here would commit that outer transaction early.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
@@ -356,5 +358,3 @@ CREATE TABLE notification_attempts (
 
 CREATE INDEX notification_attempts_recent
     ON notification_attempts (branch_id, occurred_at DESC);
-
-COMMIT;

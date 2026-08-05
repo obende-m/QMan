@@ -13,4 +13,6 @@
 export * from "./rows.js";
 export * from "./mappers.js";
 export * from "./sql.js";
+export * from "./pg.js";
+export * from "./migrator.js";
 export * from "./repositories.js";
