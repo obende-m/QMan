@@ -1149,3 +1149,44 @@ Recorded rather than silently "fixed", since some are product decisions.
 - **Remaining screens.** Clinical Workspace, Manager Dashboard and Patient
   Journey Tracking are designed but not built. The primitives they need
   (`JourneyTimeline`, `JourneyCode`, `ActionButton`, `StatCard`) already exist.
+
+## ADR-051 — Stock PostgreSQL, no extensions
+
+**Decision.** The schema uses core PostgreSQL 13 or later and nothing else. No
+extensions, no vendor features, no constructs that cannot run inside the
+migration runner's transaction. The rule is enforced by
+`migrations.test.ts`, which reads every migration file and fails the suite on
+`CREATE EXTENSION`, on extension-provided functions, on `CONCURRENTLY`, and on
+transaction control.
+
+**Why.** QMan installs on whatever PostgreSQL a hospital already has or can
+afford — Render, Neon, Railway, DigitalOcean, Supabase, RDS, Azure, or a machine
+in a back office. Those platforms differ least in the SQL they run and most in
+what they refuse to let you do, and `CREATE EXTENSION` is high on that list: it
+is privileged, and several managed providers restrict or deny it.
+
+The failure lands at the worst possible moment. A schema that cannot be created
+is a schema that cannot be *restored*, so the constraint bites hardest during a
+recovery — when the hospital is already down and nobody is in a position to
+debug a permissions error against a supplier's support queue.
+
+`pgcrypto` was the only extension in the schema, and it was there for
+`gen_random_uuid()`, which has been core since PostgreSQL 13. Removing it cost
+nothing and bought portability across every provider on the list.
+
+**Also fixed here.** `users` declared `UNIQUE (hospital_id, lower(username))` as
+a table constraint. A UNIQUE constraint takes bare column names; an expression
+there is not a weaker rule but a syntax error, on every PostgreSQL there is. It
+is now a unique index, which is what it always needed to be.
+
+That bug had survived since the schema was written, because nothing had ever run
+against a real database. It is the clearest argument available for why
+PostgreSQL verification is the blocking hardening item: a recording fake tests
+the SQL a repository *issues*, and cannot tell you the server would reject it.
+
+**Deliberately kept.** `pg_advisory_xact_lock`, `ON CONFLICT … DO UPDATE`,
+`GREATEST`, partial indexes and `to_tsvector('simple', …)` are all core
+PostgreSQL, present on every provider above. Portability here means portable
+across PostgreSQL deployments, not portable across database engines — the
+concurrency guarantees the queue depends on are worth more than a theoretical
+migration to a different vendor that no hospital has ever asked for.

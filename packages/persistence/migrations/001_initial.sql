@@ -16,8 +16,13 @@
 -- Migrations do not manage transactions. The runner wraps the whole run in one,
 -- so a failure anywhere leaves the schema exactly as it was rather than half
 -- converted. A BEGIN here would commit that outer transaction early.
-
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+--
+-- Core PostgreSQL 13 or later, and no extensions. `gen_random_uuid()` has been
+-- built in since 13, so pgcrypto is not needed for it. That matters because
+-- CREATE EXTENSION is a privileged operation that several managed providers
+-- restrict or refuse outright, and a schema that cannot be created is a schema
+-- that cannot be restored — which is the moment it is needed most. Nothing here
+-- requires anything a stock server does not already have.
 
 -- ─────────────────────────────────────────────────────────── organisation
 
@@ -77,9 +82,18 @@ CREATE TABLE users (
     password_salt text,
     enabled       boolean     NOT NULL DEFAULT true,
     created_at    timestamptz NOT NULL DEFAULT now(),
-    updated_at    timestamptz NOT NULL DEFAULT now(),
-    UNIQUE (hospital_id, lower(username))
+    updated_at    timestamptz NOT NULL DEFAULT now()
 );
+
+-- Usernames are unique per hospital, case-insensitively: "Ifeoma" and "ifeoma"
+-- are one receptionist, and two accounts differing only in capitalisation are a
+-- support call waiting to happen.
+--
+-- A unique index rather than a UNIQUE table constraint, because a constraint
+-- takes bare column names and cannot hold an expression. Written as a
+-- constraint this does not create a weaker rule; it fails to parse.
+CREATE UNIQUE INDEX users_hospital_username_key
+    ON users (hospital_id, lower(username));
 
 -- Empty means every branch, so a single-site hospital configures nothing.
 CREATE TABLE user_branches (
