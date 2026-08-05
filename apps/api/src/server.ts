@@ -35,6 +35,7 @@ import { applyCors, handlePreflight, securityHeaders } from "./http-security.js"
 import { registerQueueRoutes, type QueueRouteDependencies } from "./queue-routes.js";
 import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
 import { registerPublicRoutes, type PublicRouteDependencies } from "./public-routes.js";
+import { registerConfigRoutes, type ConfigRouteDependencies } from "./config-routes.js";
 import { V1 } from "./version.js";
 
 export { SESSION_COOKIE };
@@ -65,6 +66,8 @@ export interface ServerOptions {
   /** Set when the deployment terminates TLS. Controls HSTS only. */
   readonly https?: boolean;
   readonly stream?: EventStream;
+  /** The configuration read. Registered only when its repository exists. */
+  readonly configuration?: Omit<ConfigRouteDependencies, "guards" | "logger" | "resolveHospital">;
   /** The two unauthenticated surfaces. Registered only when configured. */
   readonly publicSurfaces?: Omit<PublicRouteDependencies, "logger" | "now">;
   /** Business routes are registered only when their repositories exist. */
@@ -356,6 +359,15 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return reply;
     },
   );
+
+  if (options.configuration) {
+    registerConfigRoutes(app, {
+      ...options.configuration,
+      guards,
+      logger,
+      resolveHospital: options.resolveHospital,
+    });
+  }
 
   if (options.publicSurfaces) {
     registerPublicRoutes(app, { ...options.publicSurfaces, logger, now });

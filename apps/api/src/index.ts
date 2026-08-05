@@ -11,6 +11,8 @@ import { randomUUID } from "node:crypto";
 import {
   migrate,
   PostgresAccountRepository,
+  PostgresBoardDirectory,
+  PostgresConfigurationRepository,
   PostgresEventRepository,
   PostgresIdempotencyRepository,
   PostgresLockoutRepository,
@@ -55,6 +57,11 @@ async function main(): Promise<void> {
     secureCookies: config.secureCookies,
     allowedOrigins: config.allowedOrigins,
     https: config.secureCookies,
+    configuration: { configuration: new PostgresConfigurationRepository(db) },
+    publicSurfaces: {
+      visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
+      boards: new PostgresBoardDirectory(db),
+    },
     queue: {
       visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
       events: new PostgresEventRepository(db),
