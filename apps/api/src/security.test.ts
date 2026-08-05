@@ -132,7 +132,7 @@ describe("authorization", () => {
   async function signIn(app: ReturnType<typeof harness>) {
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -149,7 +149,7 @@ describe("authorization", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/sessions",
+      url: "/api/v1/sessions",
       headers: { cookie },
     });
     expect(response.statusCode).toBe(200);
@@ -166,7 +166,7 @@ describe("authorization", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/sessions",
+      url: "/api/v1/sessions",
       headers: { cookie },
     });
 
@@ -184,13 +184,13 @@ describe("authorization", () => {
     accounts.accounts.push(await account(["queue.call"]));
     const app = harness(accounts, sessions);
 
-    const anonymous = await app.inject({ method: "GET", url: "/api/sessions" });
+    const anonymous = await app.inject({ method: "GET", url: "/api/v1/sessions" });
     expect(anonymous.statusCode).toBe(401);
 
     const { cookie } = await signIn(app);
     const signedIn = await app.inject({
       method: "GET",
-      url: "/api/sessions",
+      url: "/api/v1/sessions",
       headers: { cookie },
     });
     expect(signedIn.statusCode).toBe(403);
@@ -212,7 +212,7 @@ describe("authorization", () => {
     });
     const response = await elsewhere.inject({
       method: "GET",
-      url: "/api/sessions",
+      url: "/api/v1/sessions",
       headers: { cookie },
     });
 
@@ -235,7 +235,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: "https://malicious.example" },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -247,7 +247,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       payload: { username: "ifeoma", password: PASSWORD },
     });
     expect(response.statusCode).toBe(403);
@@ -257,7 +257,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { referer: `${ORIGIN}/index.html` },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -273,7 +273,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -281,7 +281,7 @@ describe("cross-site request forgery", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: { cookie, origin: ORIGIN },
     });
     expect(response.statusCode).toBe(403);
@@ -291,7 +291,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -299,7 +299,7 @@ describe("cross-site request forgery", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: { cookie, origin: ORIGIN, [CSRF_HEADER]: "a token from somewhere else" },
     });
     expect(response.statusCode).toBe(403);
@@ -309,14 +309,14 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: {
         cookie: cookies(login.headers["set-cookie"]),
         origin: ORIGIN,
@@ -331,7 +331,7 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -358,13 +358,13 @@ describe("cross-site request forgery", () => {
     const app = harness(accounts, sessions);
     const first = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
     const second = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -444,7 +444,7 @@ describe("login rate limiting", () => {
     const attempt = () =>
       app.inject({
         method: "POST",
-        url: "/api/auth/login",
+        url: "/api/v1/auth/login",
         headers: { origin: ORIGIN },
         payload: { username: "ifeoma", password: PASSWORD },
       });

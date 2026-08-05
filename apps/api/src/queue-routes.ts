@@ -28,6 +28,8 @@ import { requirePermission, type GuardDependencies } from "./authorization.js";
 import { describeEvent, type EventStream } from "./stream.js";
 import { toNewEvent } from "./visit-events.js";
 import type { Logger } from "./logging.js";
+import { guard, record, type IdempotencyDependencies } from "./idempotency.js";
+import { V1 } from "./version.js";
 
 export interface QueueRouteDependencies {
   readonly guards: GuardDependencies;
@@ -36,6 +38,8 @@ export interface QueueRouteDependencies {
   readonly stream: EventStream;
   readonly logger: Logger;
   readonly resolveHospital: (request: FastifyRequest) => string;
+  /** Absent in tests that are not about retries; every deployment has it. */
+  readonly idempotency?: IdempotencyDependencies;
 }
 
 /**
@@ -94,15 +98,33 @@ async function act(
 ): Promise<void> {
   const { id } = request.params as { id: string };
   const authenticated = request.authenticated!;
+
+  /**
+   * A retry is resolved before any work happens. Doing it afterwards would
+   * mean the second call had already advanced the attempt counter by the time
+   * anyone noticed it was a duplicate.
+   */
+  const guarded = deps.idempotency
+    ? await guard(deps.idempotency, request, reply)
+    : ({ proceed: true, key: null } as const);
+  if (!guarded.proceed) return;
+
+  const respond = async (status: number, payload: unknown): Promise<void> => {
+    if (deps.idempotency) {
+      await record(deps.idempotency, request, guarded.key, status, payload);
+    }
+    void reply.status(status).send(payload);
+  };
+
   const visit = await deps.visits.find(VisitId(id));
 
   if (visit === null) {
-    void reply.status(404).send({ error: "No such visit." });
+    await respond(404, { error: "No such visit." });
     return;
   }
 
   if (visit.branchId !== authenticated.session.branchId && authenticated.session.branchId !== null) {
-    void reply.status(403).send({ error: "That visit is in another branch." });
+    await respond(403, { error: "That visit is in another branch." });
     return;
   }
 
@@ -113,8 +135,13 @@ async function act(
       // Events recorded before the throw are discarded with it: the aggregate
       // rejected the action, so nothing happened worth publishing.
       visit.pullEvents();
-      void reply.status(409).send({ error: error.message, code: error.code });
+      await respond(409, { error: error.message, code: error.code });
       return;
+    }
+    if (deps.idempotency && guarded.key !== null) {
+      // The claim must not outlive a failure, or the retry this exists to
+      // support would be answered with a stored error instead of running.
+      await record(deps.idempotency, request, guarded.key, 500, null);
     }
     throw error;
   }
@@ -143,7 +170,7 @@ async function act(
     );
   }
 
-  void reply.status(200).send({ visit: describeVisit(visit) });
+  await respond(200, { visit: describeVisit(visit) });
 }
 
 export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDependencies): void {
@@ -151,19 +178,19 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
     preHandler: requirePermission(deps.guards, permission),
   });
 
-  app.get("/api/stations/:stationId/queue", guarded("queue.call"), async (request, reply) => {
+  app.get(`${V1}/stations/:stationId/queue`, guarded("queue.call"), async (request, reply) => {
     const { stationId } = request.params as { stationId: string };
     const visits = await deps.visits.openAtStation(StationId(stationId));
     return reply.status(200).send({ visits: visits.map(describeVisit) });
   });
 
-  app.get("/api/branches/:branchId/visits", guarded("reports.view"), async (request, reply) => {
+  app.get(`${V1}/branches/:branchId/visits`, guarded("reports.view"), async (request, reply) => {
     const { branchId } = request.params as { branchId: string };
     const visits = await deps.visits.activeInBranch(BranchId(branchId));
     return reply.status(200).send({ visits: visits.map(describeVisit) });
   });
 
-  app.post("/api/visits/:id/call", guarded("queue.call"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/call`, guarded("queue.call"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.call(actor, { actorId: actor });
     });
@@ -175,37 +202,37 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
    * intentions, carrying two different permissions — a role may be allowed to
    * call patients without being allowed to keep recalling one.
    */
-  app.post("/api/visits/:id/recall", guarded("queue.recall"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/recall`, guarded("queue.recall"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.call(actor, { actorId: actor });
     });
   });
 
-  app.post("/api/visits/:id/start", guarded("queue.start"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/start`, guarded("queue.start"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.startService(actor, { actorId: actor });
     });
   });
 
-  app.post("/api/visits/:id/skip", guarded("queue.skip"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/skip`, guarded("queue.skip"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.skip({ actorId: actor });
     });
   });
 
-  app.post("/api/visits/:id/complete", guarded("queue.complete"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/complete`, guarded("queue.complete"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.complete({ actorId: actor });
     });
   });
 
-  app.post("/api/visits/:id/cancel", guarded("visit.cancel"), async (request, reply) => {
+  app.post(`${V1}/visits/:id/cancel`, guarded("visit.cancel"), async (request, reply) => {
     await act(deps, request, reply, (visit, actor) => {
       visit.cancel({ actorId: actor });
     });
   });
 
-  app.get("/api/events", guarded("reports.view"), async (request, reply) => {
+  app.get(`${V1}/events`, guarded("reports.view"), async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
     const records = await deps.events.query({
       ...(query["branchId"] ? { branchId: BranchId(query["branchId"]) } : {}),

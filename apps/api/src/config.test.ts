@@ -115,6 +115,7 @@ describe("migration loading", () => {
       "001_initial",
       "002_session_tokens",
       "003_login_throttle",
+      "004_idempotency",
     ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
   });

@@ -137,7 +137,7 @@ describe("cross-origin access", () => {
   it("answers a preflight without requiring a CSRF token", async () => {
     const response = await server().inject({
       method: "OPTIONS",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: {
         origin: ORIGIN,
         "access-control-request-method": "POST",

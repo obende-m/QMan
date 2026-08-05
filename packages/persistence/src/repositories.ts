@@ -623,6 +623,128 @@ export class PostgresLockoutRepository implements LockoutRepository {
 }
 
 /**
+ * Stored results of state-changing requests, keyed by the client's key.
+ *
+ * The claim is what makes this safe under concurrency. Two retries arriving
+ * together must not both do the work, so the key is claimed with an insert that
+ * either succeeds or reports that someone else holds it — never a read followed
+ * by a write, which has a window between the two exactly wide enough for the
+ * race this exists to prevent.
+ */
+export type IdempotencyClaim =
+  | { readonly outcome: "claimed" }
+  | { readonly outcome: "in_flight" }
+  | { readonly outcome: "mismatch" }
+  | {
+      readonly outcome: "replay";
+      readonly statusCode: number;
+      readonly response: unknown;
+    };
+
+export interface IdempotencyRepository {
+  claim(
+    hospitalId: string,
+    key: string,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IdempotencyClaim>;
+  complete(
+    hospitalId: string,
+    key: string,
+    statusCode: number,
+    response: unknown,
+    at: Date,
+  ): Promise<void>;
+  /** Releases a claim whose request failed, so a retry may do the work. */
+  release(hospitalId: string, key: string): Promise<void>;
+  prune(before: Date): Promise<number>;
+}
+
+interface IdempotencyRow {
+  fingerprint: string;
+  status_code: number | null;
+  response: unknown;
+}
+
+export class PostgresIdempotencyRepository implements IdempotencyRepository {
+  constructor(private readonly db: Database) {}
+
+  async claim(
+    hospitalId: string,
+    key: string,
+    fingerprint: string,
+    at: Date,
+  ): Promise<IdempotencyClaim> {
+    // DO NOTHING rather than DO UPDATE: losing the race must not overwrite the
+    // winner's row, and the empty result is precisely the signal that someone
+    // else got there first.
+    const inserted = await this.db.query<{ key: string }>(
+      `INSERT INTO idempotency_keys (hospital_id, key, fingerprint, claimed_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (hospital_id, key) DO NOTHING
+       RETURNING key`,
+      [hospitalId, key, fingerprint, at],
+    );
+    if (inserted.length > 0) return { outcome: "claimed" };
+
+    const [existing] = await this.db.query<IdempotencyRow>(
+      `SELECT fingerprint, status_code, response FROM idempotency_keys
+       WHERE hospital_id = $1 AND key = $2`,
+      [hospitalId, key],
+    );
+
+    // Vanished between the insert and the read — pruned, or released by a
+    // failure. Treating it as in flight makes the client retry, which is the
+    // safe reading of an ambiguous state.
+    if (existing === undefined) return { outcome: "in_flight" };
+
+    if (existing.fingerprint !== fingerprint) return { outcome: "mismatch" };
+    if (existing.status_code === null) return { outcome: "in_flight" };
+
+    return {
+      outcome: "replay",
+      statusCode: existing.status_code,
+      response: existing.response,
+    };
+  }
+
+  async complete(
+    hospitalId: string,
+    key: string,
+    statusCode: number,
+    response: unknown,
+    at: Date,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE idempotency_keys
+         SET status_code = $3, response = $4, completed_at = $5
+       WHERE hospital_id = $1 AND key = $2`,
+      [hospitalId, key, statusCode, JSON.stringify(response), at],
+    );
+  }
+
+  /**
+   * Only an unfinished claim is released. A completed one is the stored answer
+   * and deleting it would let the work run twice.
+   */
+  async release(hospitalId: string, key: string): Promise<void> {
+    await this.db.query(
+      `DELETE FROM idempotency_keys
+       WHERE hospital_id = $1 AND key = $2 AND status_code IS NULL`,
+      [hospitalId, key],
+    );
+  }
+
+  async prune(before: Date): Promise<number> {
+    const rows = await this.db.query<{ key: string }>(
+      `DELETE FROM idempotency_keys WHERE claimed_at < $1 RETURNING key`,
+      [before],
+    );
+    return rows.length;
+  }
+}
+
+/**
  * Postgres ticket allocation.
  *
  * `INSERT … ON CONFLICT DO UPDATE … RETURNING` increments and reads under a

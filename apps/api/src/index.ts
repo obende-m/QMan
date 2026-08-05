@@ -12,6 +12,7 @@ import {
   migrate,
   PostgresAccountRepository,
   PostgresEventRepository,
+  PostgresIdempotencyRepository,
   PostgresLockoutRepository,
   PostgresSessionRepository,
   PostgresVisitRepository,
@@ -57,6 +58,12 @@ async function main(): Promise<void> {
     queue: {
       visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
       events: new PostgresEventRepository(db),
+      idempotency: {
+        repository: new PostgresIdempotencyRepository(db),
+        resolveHospital: () => config.hospitalId,
+        logger,
+        now,
+      },
     },
   });
 

@@ -34,6 +34,7 @@ import { silentLogger, type Logger } from "./logging.js";
 import { applyCors, handlePreflight, securityHeaders } from "./http-security.js";
 import { registerQueueRoutes, type QueueRouteDependencies } from "./queue-routes.js";
 import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
+import { V1 } from "./version.js";
 
 export { SESSION_COOKIE };
 export { CSRF_COOKIE, CSRF_HEADER } from "./csrf.js";
@@ -202,7 +203,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     });
   });
 
-  app.post("/api/auth/login", async (request, reply) => {
+  app.post(`${V1}/auth/login`, async (request, reply) => {
     /**
      * Rate limiting sits in front of lockout and guards the opposite attack:
      * one password tried against many usernames, where no single account ever
@@ -273,7 +274,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     return reply.status(200).send({ user: describeUser(result.user, now()), csrfToken: csrf });
   });
 
-  app.post("/api/auth/logout", async (request, reply) => {
+  app.post(`${V1}/auth/logout`, async (request, reply) => {
     const token = readSessionToken(request);
     if (token !== null) await options.auth.signOut(token);
     endSessionCookies(reply, options.secureCookies);
@@ -283,7 +284,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.get(
-    "/api/auth/me",
+    `${V1}/auth/me`,
     { preHandler: requireSignedIn(guards) },
     async (request, reply) => {
       return reply.status(200).send({ user: describeUser(request.authenticated!.user, now()) });
@@ -295,7 +296,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
    * exists, rather than first being tried when the queue endpoints land.
    */
   app.get(
-    "/api/sessions",
+    `${V1}/sessions`,
     { preHandler: requirePermission(guards, "admin.users") },
     async (_request, reply) => {
       return reply.status(200).send({ sessions: [] });
@@ -315,7 +316,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
    * severed cable are indistinguishable.
    */
   app.get(
-    "/api/stream",
+    `${V1}/stream`,
     { preHandler: requireSignedIn(guards) },
     async (request, reply) => {
       const branchId = request.authenticated!.session.branchId;

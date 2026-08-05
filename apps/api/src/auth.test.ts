@@ -159,7 +159,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -177,7 +177,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -191,7 +191,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -208,7 +208,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -224,13 +224,13 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const wrong = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: "not the password" },
     });
     const missing = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "nobody", password: "not the password" },
     });
@@ -263,7 +263,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "adams", password: PASSWORD },
     });
@@ -279,7 +279,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -293,7 +293,7 @@ describe("sign-in", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       await app.inject({
         method: "POST",
-        url: "/api/auth/login",
+        url: "/api/v1/auth/login",
         headers: { origin: ORIGIN },
         payload: { username: "ifeoma", password: "wrong" },
       });
@@ -302,7 +302,7 @@ describe("sign-in", () => {
     // Correct password, still refused — the lock is on the account, not the guess.
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -316,7 +316,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "IFEOMA", password: PASSWORD },
     });
@@ -327,7 +327,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "", password: "" },
     });
@@ -345,7 +345,7 @@ describe("sign-in", () => {
     const { app } = harness(accounts, sessions);
     const response = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -371,7 +371,7 @@ describe("session resolution", () => {
     const { app } = harness(accounts, sessions, lines);
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -387,7 +387,7 @@ describe("session resolution", () => {
     const { app, cookie } = await signedIn();
     const response = await app.inject({
       method: "GET",
-      url: "/api/auth/me",
+      url: "/api/v1/auth/me",
       headers: { cookie },
     });
 
@@ -397,7 +397,7 @@ describe("session resolution", () => {
 
   it("refuses a request with no cookie", async () => {
     const { app } = await signedIn();
-    const response = await app.inject({ method: "GET", url: "/api/auth/me" });
+    const response = await app.inject({ method: "GET", url: "/api/v1/auth/me" });
     expect(response.statusCode).toBe(401);
   });
 
@@ -405,7 +405,7 @@ describe("session resolution", () => {
     const { app } = await signedIn();
     const response = await app.inject({
       method: "GET",
-      url: "/api/auth/me",
+      url: "/api/v1/auth/me",
       headers: { cookie: `${SESSION_COOKIE}=not-a-real-token` },
     });
     expect(response.statusCode).toBe(401);
@@ -416,12 +416,12 @@ describe("session resolution", () => {
 
     const out = await app.inject({
       method: "POST",
-      url: "/api/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: { cookie, origin: ORIGIN, [CSRF_HEADER]: csrf },
     });
     expect(out.statusCode).toBe(204);
 
-    const after = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } });
+    const after = await app.inject({ method: "GET", url: "/api/v1/auth/me", headers: { cookie } });
     expect(after.statusCode).toBe(401);
   });
 
@@ -431,7 +431,7 @@ describe("session resolution", () => {
     // one this server issued. It must not be told that.
     const unknown = await app.inject({
       method: "POST",
-      url: "/api/auth/logout",
+      url: "/api/v1/auth/logout",
       headers: {
         cookie: `${SESSION_COOKIE}=never-issued; ${CSRF_COOKIE}=matching`,
         origin: ORIGIN,
@@ -450,7 +450,7 @@ describe("session resolution", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/api/auth/me",
+      url: "/api/v1/auth/me",
       headers: { cookie },
     });
     expect(response.statusCode).toBe(401);
@@ -466,7 +466,7 @@ describe("session resolution", () => {
     );
 
     expect(ended).toBe(1);
-    const after = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } });
+    const after = await app.inject({ method: "GET", url: "/api/v1/auth/me", headers: { cookie } });
     expect(after.statusCode).toBe(401);
   });
 });
@@ -497,7 +497,7 @@ describe("request identity and logging", () => {
 
     await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
@@ -510,7 +510,7 @@ describe("request identity and logging", () => {
     expect(entry["hospitalId"]).toBe(HOSPITAL);
     expect(entry["requestId"]).toBeDefined();
     expect(entry["status"]).toBe(200);
-    expect(entry["path"]).toBe("/api/auth/login");
+    expect(entry["path"]).toBe("/api/v1/auth/login");
   });
 
   it("never writes a password or a token to the log", async () => {
@@ -522,13 +522,13 @@ describe("request identity and logging", () => {
 
     const login = await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
     await app.inject({
       method: "POST",
-      url: "/api/auth/login",
+      url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: "wrong one" },
     });
