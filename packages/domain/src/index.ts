@@ -25,6 +25,7 @@ export * from "./visit/priority.js";
 export * from "./visit/visit-status.js";
 export * from "./visit/queue-entry.js";
 export * from "./visit/visit.js";
+export * from "./visit/visit-wire.js";
 
 export * from "./queue/station-queue.js";
 export * from "./queue/queue-number.js";

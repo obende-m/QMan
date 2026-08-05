@@ -22,6 +22,7 @@ import {
   VisitId,
   type Permission,
   type QueueTicket,
+  visitToWire,
   type Visit,
   type WorkflowId,
 } from "@qman/domain";
@@ -72,6 +73,17 @@ export interface QueueRouteDependencies {
 function describeVisit(visit: Visit): Record<string, unknown> {
   const entry = visit.currentEntry;
   return {
+    /**
+     * The aggregate's own state, so a staff surface can rehydrate the visit and
+     * call the same domain projections the server would — queue position,
+     * estimated wait, station health. Shipping rendered numbers instead would
+     * mean an endpoint per projection and a second implementation of each the
+     * first time a screen wanted one the API did not already return.
+     *
+     * Staff only. The display board and patient tracker have their own
+     * projections, which carry neither the patient nor the Journey Code.
+     */
+    state: visitToWire(visit),
     id: visit.id,
     journeyCode: visit.journeyCode,
     branchId: visit.branchId,

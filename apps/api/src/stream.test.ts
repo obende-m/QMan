@@ -241,3 +241,24 @@ describe("event fan-out", () => {
     expect(board.received[0]).toContain("heartbeat");
   });
 });
+
+describe("audience separation on the staff visit projection", () => {
+  /**
+   * The staff projection deliberately carries the patient, because a
+   * workstation shows who is being called. The board and tracker projections
+   * are built separately and must never inherit it.
+   */
+  it("keeps the patient out of the board projection entirely", () => {
+    const withPatient = record({
+      payload: {
+        stationId: "station-consult",
+        queueLabel: "A-023",
+        status: "called",
+        patientName: "Amara Okafor",
+      },
+    });
+
+    expect(JSON.stringify(describeBoardEvent(withPatient))).not.toContain("Amara");
+    expect(JSON.stringify(describeEvent(withPatient))).not.toContain("Amara");
+  });
+});
