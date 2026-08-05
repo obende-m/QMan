@@ -15,11 +15,8 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import type {
-  AuthenticatedUser,
-  ConnectionSnapshot,
-  Permission,
-} from "@qman/domain";
+import type { ConnectionSnapshot, Permission } from "@qman/domain";
+import type { SignedInUser } from "../../data/auth-api.js";
 import { cn } from "../ui/cn.js";
 import { ConnectionStatus } from "../ui/ConnectionStatus.js";
 
@@ -85,7 +82,7 @@ const NAV: ReadonlyArray<{
 export interface AppShellProps {
   active: NavKey;
   onNavigate: (key: NavKey) => void;
-  user: AuthenticatedUser;
+  user: SignedInUser;
   onSignOut: () => void;
   /**
    * Freshness of the data behind every staff screen.
@@ -206,7 +203,7 @@ function Sidebar({
   onCloseMobile,
 }: {
   active: NavKey;
-  user: AuthenticatedUser;
+  user: SignedInUser;
   onSignOut: () => void;
   onNavigate: (key: NavKey) => void;
   mobileOpen: boolean;
@@ -285,10 +282,10 @@ function Sidebar({
           <div className="mt-auto flex flex-col gap-1 border-t border-outline-variant pt-4">
             <div className="px-4 py-2">
               <p className="truncate text-body-sm font-semibold text-on-surface">
-                {user.account.displayName}
+                {user.displayName}
               </p>
               <p className="truncate font-mono text-label-caps uppercase text-on-surface-variant">
-                {user.account.username}
+                {user.username}
               </p>
             </div>
             <SidebarLink icon={<CircleHelp className="size-5" />} label="Support" />

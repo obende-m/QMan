@@ -13,6 +13,8 @@
 import { randomId } from "./ids.js";
 import { ApiClient } from "../api/client.js";
 import { EventStreamClient } from "../api/stream.js";
+import { AuthApi } from "./auth-api.js";
+import { AuthStore } from "./auth-store.js";
 import { ClinicStore } from "./clinic-store.js";
 import { ConfigStore } from "./config-store.js";
 import { ConfigurationApi } from "./configuration-api.js";
@@ -27,6 +29,7 @@ import { VisitsApi } from "./visits-api.js";
 const API_BASE_URL = (import.meta.env["VITE_API_URL"] as string | undefined) ?? "";
 
 export interface Stores {
+  readonly auth: AuthStore;
   readonly config: ConfigStore;
   readonly clinic: ClinicStore;
   readonly stream: EventStreamClient;
@@ -36,6 +39,7 @@ export function createStores(baseUrl: string = API_BASE_URL): Stores {
   const client = new ApiClient({ baseUrl });
   const deps = { clock: { now: () => new Date() }, ids: { next: randomId } };
 
+  const auth = new AuthStore(new AuthApi(client));
   const config = new ConfigStore(new ConfigurationApi(client));
   const clinic = new ClinicStore(new VisitsApi(client), config, deps);
   const stream = new EventStreamClient({ url: `${baseUrl}/api/v1/stream` });
@@ -52,7 +56,7 @@ export function createStores(baseUrl: string = API_BASE_URL): Stores {
     void clinic.invalidate();
   });
 
-  return { config, clinic, stream };
+  return { auth, config, clinic, stream };
 }
 
 /**

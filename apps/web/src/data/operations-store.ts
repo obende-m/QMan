@@ -23,8 +23,10 @@ import {
   type StaffPresence,
   type VisitEvent,
 } from "@qman/domain";
-import { configStore, type ConfigStore } from "./config-store.js";
-import { stationName, stationRoom } from "./demo-clinic.js";
+import type { HospitalConfiguration } from "@qman/domain";
+import type { ConfigStore } from "./config-store.js";
+import { stores } from "./runtime-stores.js";
+import { stationName, stationRoom } from "./clinic-projections.js";
 import type { EventBus, EventSubscriber } from "./event-bus.js";
 
 /**
@@ -75,7 +77,7 @@ export class OperationsStore {
   #version = 0;
   #listeners = new Set<() => void>();
 
-  constructor(private readonly config: ConfigStore = configStore) {}
+  constructor(private readonly config: ConfigStore = stores.config) {}
 
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -278,7 +280,7 @@ export class OperationsStore {
         this.#log({
           category: "operational",
           type: event.type,
-          summary: summarise(event),
+          summary: summarise(event, this.config.config),
           actorId: event.actorId,
           visitId: event.visitId,
           // Carried on the event itself, so correlation survives a restart, a
@@ -380,8 +382,8 @@ export class OperationsStore {
         ticket,
         journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
         patientName: (payload["patientName"] as string) ?? "",
-        stationName: stationName(stationId),
-        room: stationRoom(stationId),
+        stationName: stationName(this.config.config, stationId),
+        room: stationRoom(this.config.config, stationId),
         hospitalName: this.config.config.profile.name,
         namePolicy: this.config.config.defaults.namePolicy,
       },
@@ -421,7 +423,10 @@ function stationOf(event: VisitEvent): StationId | null {
   return null;
 }
 
-function summarise(event: VisitEvent): string {
+function summarise(
+  event: VisitEvent,
+  configuration: HospitalConfiguration,
+): string {
   const payload = event.payload as Record<string, unknown>;
   const ticket = (payload["queueLabel"] as string) ?? "";
 
@@ -429,21 +434,21 @@ function summarise(event: VisitEvent): string {
     case "visit.created":
       return `Visit created (${payload["journeyCode"]})`;
     case "visit.queued":
-      return `Queued at ${stationName(payload["stationId"] as StationId)}${
+      return `Queued at ${stationName(configuration, payload["stationId"] as StationId)}${
         ticket ? ` as ${ticket}` : ""
       }`;
     case "visit.called":
-      return `Called at ${stationName(payload["stationId"] as StationId)}`;
+      return `Called at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.service_started":
-      return `Service started at ${stationName(payload["stationId"] as StationId)}`;
+      return `Service started at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.skipped":
-      return `Skipped at ${stationName(payload["stationId"] as StationId)}`;
+      return `Skipped at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.stage_completed":
-      return `Stage completed at ${stationName(payload["stationId"] as StationId)}`;
+      return `Stage completed at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.routed":
-      return `Routed ${stationName(
+      return `Routed ${stationName(configuration, 
         payload["fromStationId"] as StationId,
-      )} → ${stationName(payload["toStationId"] as StationId)}`;
+      )} → ${stationName(configuration, payload["toStationId"] as StationId)}`;
     case "visit.completed":
       return "Visit completed";
     case "visit.cancelled":
