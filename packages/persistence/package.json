@@ -9,7 +9,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json",
+    "./migrations/*": "./migrations/*"
   },
   "scripts": {
     "build": "tsc --build"

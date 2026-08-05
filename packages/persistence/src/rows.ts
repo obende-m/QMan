@@ -96,6 +96,30 @@ export interface WorkflowStageRow {
   branches_to: string[];
 }
 
+/**
+ * A user with their branch grants, as the account lookup returns them.
+ *
+ * `branch_ids` is collected in the same statement rather than by a second
+ * query. This is the lookup every sign-in performs, and an empty array is
+ * meaningful — it means every branch, which is how a single-site hospital
+ * avoids configuring something it does not have.
+ */
+export interface UserRow {
+  id: string;
+  hospital_id: string;
+  role_id: string;
+  display_name: string;
+  username: string;
+  provider_id: string;
+  password_hash: string | null;
+  password_salt: string | null;
+  enabled: boolean;
+  branch_ids: string[];
+  role_key: string;
+  /** The role's grant, resolved in the same statement. */
+  permissions: string[];
+}
+
 export interface SessionRow {
   id: string;
   user_id: string;

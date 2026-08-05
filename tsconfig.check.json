@@ -14,6 +14,9 @@
   },
   // apps/web is checked by its own tsconfig — it needs DOM libs and JSX, which
   // the Node-targeted settings here deliberately do not enable.
-  "include": ["packages/*/src/**/*"],
-  "references": [{ "path": "./packages/domain" }]
+  "include": ["packages/*/src/**/*", "apps/api/src/**/*"],
+  "references": [
+    { "path": "./packages/domain" },
+    { "path": "./packages/persistence" }
+  ]
 }

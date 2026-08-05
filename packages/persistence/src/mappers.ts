@@ -9,6 +9,8 @@ import {
   WorkflowStageId,
   categoryOf,
   isJourneyCode,
+  PERMISSIONS,
+  type Permission,
   type ActivityCategory,
   type EventRecord,
   type HospitalId,
@@ -21,6 +23,7 @@ import {
   type Session,
   type SessionEndReason,
   type StationConfig,
+  type UserAccount,
   type VisitDependencies,
   type VisitState,
   type VisitStatus,
@@ -32,6 +35,7 @@ import type {
   QueueEntryRow,
   SessionRow,
   StationRow,
+  UserRow,
   VisitRow,
   WorkflowRow,
   WorkflowStageRow,
@@ -351,6 +355,58 @@ export function toWorkflow(
           branchesTo: stage.branches_to.map(StationId),
         }),
       ),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────── accounts
+
+/**
+ * An account together with the secret material used to verify it.
+ *
+ * Kept apart from `UserAccount` on purpose. `UserAccount` is what the rest of
+ * the application sees and is safe to hand to a route, a log line or a
+ * response body; the hash and salt exist only inside the authentication step
+ * and are never carried further. Two types make that boundary something the
+ * compiler enforces rather than something a reviewer has to notice.
+ */
+export interface StoredAccount {
+  readonly account: UserAccount;
+  /** The tenant this account belongs to. Never inferred from the request. */
+  readonly hospitalId: string;
+  readonly roleKey: string;
+  readonly permissions: readonly Permission[];
+  readonly passwordHash: string | null;
+  readonly passwordSalt: string | null;
+}
+
+/**
+ * Permissions the domain does not recognise are dropped, not rejected.
+ *
+ * A role granting an unknown permission means the database was configured by a
+ * newer build than the one reading it. Dropping the unknown entry degrades that
+ * user's access; failing the lookup would lock every holder of the role out of
+ * a running hospital, which is far worse than one missing button.
+ */
+function knownPermissions(values: readonly string[]): Permission[] {
+  return values.filter((value): value is Permission => value in PERMISSIONS);
+}
+
+export function toStoredAccount(row: UserRow): StoredAccount {
+  return {
+    roleKey: row.role_key,
+    permissions: knownPermissions(row.permissions),
+    account: {
+      id: UserId(row.id),
+      displayName: row.display_name,
+      username: row.username,
+      roleId: row.role_id,
+      branchIds: row.branch_ids.map((id) => BranchId(id)),
+      providerId: row.provider_id,
+      enabled: row.enabled,
+    },
+    hospitalId: row.hospital_id,
+    passwordHash: row.password_hash,
+    passwordSalt: row.password_salt,
   };
 }
 

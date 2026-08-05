@@ -19,6 +19,10 @@ export default defineConfig({
       // package's src rather than a dist build that may not exist yet.
       "@qman/domain": new URL("./packages/domain/src/index.ts", import.meta.url)
         .pathname,
+      "@qman/persistence": new URL(
+        "./packages/persistence/src/index.ts",
+        import.meta.url,
+      ).pathname,
     },
   },
 });

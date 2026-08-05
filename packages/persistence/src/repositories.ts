@@ -17,9 +17,17 @@ import {
   fromVisit,
   toEventRecord,
   toSession,
+  toStoredAccount,
   toVisit,
+  type StoredAccount,
 } from "./mappers.js";
-import type { EventRow, QueueEntryRow, SessionRow, VisitRow } from "./rows.js";
+import type {
+  EventRow,
+  QueueEntryRow,
+  SessionRow,
+  UserRow,
+  VisitRow,
+} from "./rows.js";
 import { WhereBuilder, type Database, type SqlExecutor } from "./sql.js";
 
 /**
@@ -56,9 +64,38 @@ export interface EventRepository {
 
 export interface SessionRepository {
   find(id: string): Promise<Session | null>;
+  /**
+   * Resolves a presented token to its session.
+   *
+   * Takes the hash, never the token. The caller hashes what the browser sent
+   * and looks that up, so the raw value exists only for the length of one
+   * request and is never written anywhere it could be read back.
+   */
+  findByToken(tokenHash: string): Promise<Session | null>;
+  /** Opens a session and binds it to a token. Separate from `save`, which updates one. */
+  create(session: Session, tokenHash: string): Promise<void>;
   activeForHospital(): Promise<Session[]>;
   save(session: Session): Promise<void>;
   endAllForUser(userId: UserId, reason: string, at: Date): Promise<number>;
+}
+
+/**
+ * Reads accounts for authentication.
+ *
+ * Scoped by hospital on every lookup, without exception. The tenant is a
+ * parameter rather than something derived inside the query, so a caller cannot
+ * omit it and quietly search every hospital at once — which is precisely the
+ * mistake that turns a multi-tenant system into a shared one.
+ */
+export interface AccountRepository {
+  findByUsername(hospitalId: string, username: string): Promise<StoredAccount | null>;
+  findById(userId: UserId): Promise<StoredAccount | null>;
+  updatePassword(
+    userId: UserId,
+    hash: string,
+    salt: string,
+    at: Date,
+  ): Promise<void>;
 }
 
 /**
@@ -368,6 +405,43 @@ export class PostgresSessionRepository implements SessionRepository {
     return row ? toSession(row) : null;
   }
 
+  /**
+   * Ended sessions are excluded in SQL rather than filtered afterwards.
+   *
+   * A signed-out session that still resolves is a signed-out session that still
+   * works, and "the caller will check `endedAt`" is a rule that holds until one
+   * caller forgets. The partial index on open sessions serves exactly this.
+   */
+  async findByToken(tokenHash: string): Promise<Session | null> {
+    const [row] = await this.db.query<SessionRow>(
+      `SELECT ${SESSION_COLUMNS} FROM sessions
+       WHERE token_hash = $1 AND ended_at IS NULL`,
+      [tokenHash],
+    );
+    return row ? toSession(row) : null;
+  }
+
+  async create(session: Session, tokenHash: string): Promise<void> {
+    const row = fromSession(session);
+    await this.db.query(
+      `INSERT INTO sessions (${SESSION_COLUMNS}, token_hash)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [
+        row.id,
+        row.user_id,
+        row.branch_id,
+        row.provider_id,
+        row.device,
+        row.user_agent,
+        row.started_at,
+        row.last_active_at,
+        row.ended_at,
+        row.end_reason,
+        tokenHash,
+      ],
+    );
+  }
+
   async activeForHospital(): Promise<Session[]> {
     const rows = await this.db.query<SessionRow>(
       `SELECT ${SESSION_COLUMNS} FROM sessions
@@ -412,6 +486,66 @@ export class PostgresSessionRepository implements SessionRepository {
       [at, reason, userId],
     );
     return rows.length;
+  }
+}
+
+const ACCOUNT_COLUMNS = `u.id, u.hospital_id, u.role_id, u.display_name,
+  u.username, u.provider_id, u.password_hash, u.password_salt, u.enabled,
+  r.key AS role_key, r.permissions,
+  ARRAY(SELECT ub.branch_id::text FROM user_branches ub WHERE ub.user_id = u.id)
+    AS branch_ids`;
+
+/**
+ * Joined, not looked up separately.
+ *
+ * Every authenticated request resolves an account to its permissions, so this
+ * is the hottest read in the system. An inner join is also the correct
+ * semantics: `role_id` is NOT NULL and RESTRICT-referenced, so a user without a
+ * role cannot exist, and a query that tolerated one would be describing a state
+ * the schema forbids.
+ */
+const ACCOUNT_FROM = `FROM users u JOIN roles r ON r.id = u.role_id`;
+
+export class PostgresAccountRepository implements AccountRepository {
+  constructor(private readonly db: Database) {}
+
+  /**
+   * Matched case-insensitively, against the same expression the unique index
+   * uses. "Ifeoma" and "ifeoma" are one receptionist — and because the index
+   * enforces that, this cannot return two rows for a name that differs only in
+   * capitalisation.
+   */
+  async findByUsername(
+    hospitalId: string,
+    username: string,
+  ): Promise<StoredAccount | null> {
+    const [row] = await this.db.query<UserRow>(
+      `SELECT ${ACCOUNT_COLUMNS} ${ACCOUNT_FROM}
+       WHERE u.hospital_id = $1 AND lower(u.username) = lower($2)`,
+      [hospitalId, username],
+    );
+    return row ? toStoredAccount(row) : null;
+  }
+
+  async findById(userId: UserId): Promise<StoredAccount | null> {
+    const [row] = await this.db.query<UserRow>(
+      `SELECT ${ACCOUNT_COLUMNS} ${ACCOUNT_FROM} WHERE u.id = $1`,
+      [userId],
+    );
+    return row ? toStoredAccount(row) : null;
+  }
+
+  async updatePassword(
+    userId: UserId,
+    hash: string,
+    salt: string,
+    at: Date,
+  ): Promise<void> {
+    await this.db.query(
+      `UPDATE users SET password_hash = $2, password_salt = $3, updated_at = $4
+       WHERE id = $1`,
+      [userId, hash, salt, at],
+    );
   }
 }
 
