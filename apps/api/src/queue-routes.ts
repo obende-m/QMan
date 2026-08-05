@@ -21,15 +21,32 @@ import {
   UserId,
   VisitId,
   type Permission,
+  type QueueTicket,
   type Visit,
+  type WorkflowId,
 } from "@qman/domain";
-import type { EventRepository, VisitRepository } from "@qman/persistence";
+import type {
+  ConfigurationRepository,
+  EventRepository,
+  VisitRepository,
+} from "@qman/persistence";
+import { admit, ticketForRoute, type AdmissionDependencies } from "./admission.js";
 import { requirePermission, type GuardDependencies } from "./authorization.js";
 import { describeEvent, type EventStream } from "./stream.js";
 import { toNewEvent } from "./visit-events.js";
 import type { Logger } from "./logging.js";
 import { guard, record, type IdempotencyDependencies } from "./idempotency.js";
 import { V1 } from "./version.js";
+
+/**
+ * What admission and routing need beyond the queue actions: a configuration to
+ * number tickets from, an allocator, and the token generator for a new visit.
+ */
+export interface AdmissionSupport extends AdmissionDependencies {
+  readonly configuration: ConfigurationRepository;
+  readonly newTrackingToken: () => string;
+  readonly hashToken: (token: string) => string;
+}
 
 export interface QueueRouteDependencies {
   readonly guards: GuardDependencies;
@@ -40,6 +57,8 @@ export interface QueueRouteDependencies {
   readonly resolveHospital: (request: FastifyRequest) => string;
   /** Absent in tests that are not about retries; every deployment has it. */
   readonly idempotency?: IdempotencyDependencies;
+  /** Absent in suites that only exercise queue transitions. */
+  readonly admission?: AdmissionSupport;
 }
 
 /**
@@ -90,11 +109,17 @@ function describeVisit(visit: Visit): Record<string, unknown> {
  * who needs to know their screen is stale rather than that they did something
  * wrong.
  */
-async function act(
+async function act<TPrepared = undefined>(
   deps: QueueRouteDependencies,
   request: FastifyRequest,
   reply: FastifyReply,
-  apply: (visit: Visit, actor: UserId) => void,
+  apply: (visit: Visit, actor: UserId, prepared: TPrepared) => void,
+  /**
+   * Anything the transition needs that must be fetched first — a ticket, for
+   * routing. Runs after the visit is loaded and before the aggregate acts, so
+   * the value belongs to this request rather than to shared state.
+   */
+  prepare?: (visit: Visit) => Promise<TPrepared>,
 ): Promise<void> {
   const { id } = request.params as { id: string };
   const authenticated = request.authenticated!;
@@ -129,7 +154,8 @@ async function act(
   }
 
   try {
-    apply(visit, authenticated.user.account.id);
+    const prepared = (prepare ? await prepare(visit) : undefined) as TPrepared;
+    apply(visit, authenticated.user.account.id, prepared);
   } catch (error) {
     if (error instanceof InvariantViolationError) {
       // Events recorded before the throw are discarded with it: the aggregate
@@ -176,6 +202,156 @@ async function act(
 export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDependencies): void {
   const guarded = (permission: Permission) => ({
     preHandler: requirePermission(deps.guards, permission),
+  });
+
+  /**
+   * Admits a patient.
+   *
+   * The one endpoint that creates state rather than moving it, and the one that
+   * needs the configuration: a ticket is numbered from the station's own
+   * template, and the first stage of the workflow decides where the patient
+   * starts. The browser used to do this against its own copy of the
+   * configuration, which is how a ticket could be numbered from one version of
+   * a template while the manager's SLA was measured against another.
+   */
+  app.post(`${V1}/visits`, guarded("visit.create"), async (request, reply) => {
+    if (deps.admission === undefined) {
+      return reply.status(503).send({ error: "Admission is not available." });
+    }
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const name = typeof body["patientName"] === "string" ? body["patientName"].trim() : "";
+    if (name === "") {
+      return reply.status(400).send({ error: "A visit needs a patient name." });
+    }
+
+    const authenticated = request.authenticated!;
+    const configuration = await deps.admission.configuration.load(
+      deps.resolveHospital(request),
+    );
+    if (configuration === null) {
+      return reply.status(500).send({ error: "Configuration unavailable." });
+    }
+
+    const branchId = (authenticated.session.branchId ??
+      configuration.branches.find((b) => b.isDefault)?.id ??
+      configuration.branches[0]?.id) as BranchId | undefined;
+    if (branchId === undefined) {
+      return reply.status(500).send({ error: "This hospital has no branches." });
+    }
+
+    const workflowId = (typeof body["workflowId"] === "string"
+      ? body["workflowId"]
+      : (configuration.workflows.find((w) => w.isDefault) ?? configuration.workflows[0])
+          ?.id) as WorkflowId | undefined;
+    if (workflowId === undefined) {
+      return reply.status(422).send({ error: "This hospital has no workflow to admit into." });
+    }
+
+    let admission;
+    try {
+      admission = await admit(
+        deps.admission,
+        configuration,
+        {
+          branchId,
+          workflowId,
+          patient: {
+            name,
+            hospitalNumber:
+              typeof body["hospitalNumber"] === "string" ? body["hospitalNumber"] : null,
+            phone: typeof body["phone"] === "string" ? body["phone"] : null,
+          },
+          ...(typeof body["priority"] === "string"
+            ? { priority: body["priority"] as never }
+            : {}),
+          actorId: authenticated.user.account.id,
+        },
+        deps.admission.newTrackingToken,
+        deps.admission.hashToken,
+      );
+    } catch (error) {
+      if (error instanceof InvariantViolationError) {
+        return reply.status(409).send({ error: error.message, code: error.code });
+      }
+      throw error;
+    }
+
+    const records = admission.visit
+      .pullEvents()
+      .map((event) =>
+        toNewEvent(event, {
+          hospitalId: deps.resolveHospital(request),
+          sessionId: authenticated.session.id,
+        }),
+      );
+
+    await deps.visits.save(admission.visit, records, {
+      trackingTokenHash: deps.admission.hashToken(admission.trackingToken),
+    });
+
+    for (const record of records) {
+      deps.stream.publish({
+        ...record,
+        id: `${admission.visit.id}-${record.occurredAt.getTime()}-${record.type}`,
+        sequence: 0,
+        recordedAt: record.occurredAt,
+      });
+    }
+
+    // The token is returned exactly once, to be printed into the QR code. It is
+    // never readable again: only its hash is stored.
+    return reply.status(201).send({
+      visit: describeVisit(admission.visit),
+      trackingToken: admission.trackingToken,
+    });
+  });
+
+  /**
+   * Routes a visit onward.
+   *
+   * Leaving the workflow is a separate permission from routing within it,
+   * because sending a patient somewhere the workflow does not provide for is a
+   * deliberate override rather than an ordinary step.
+   */
+  app.post(`${V1}/visits/:id/route`, guarded("queue.route"), async (request, reply) => {
+    if (deps.admission === undefined) {
+      return reply.status(503).send({ error: "Routing is not available." });
+    }
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const toStationId = typeof body["stationId"] === "string" ? body["stationId"] : "";
+    if (toStationId === "") {
+      return reply.status(400).send({ error: "A destination station is required." });
+    }
+
+    const configuration = await deps.admission.configuration.load(
+      deps.resolveHospital(request),
+    );
+    if (configuration === null) {
+      return reply.status(500).send({ error: "Configuration unavailable." });
+    }
+
+    const followedWorkflow = body["followedWorkflow"] !== false;
+    if (!followedWorkflow && !request.authenticated!.user.permissions.includes("queue.route_off_workflow")) {
+      return reply.status(403).send({
+        error: "You do not have permission to route outside the workflow.",
+        permission: "queue.route_off_workflow",
+      });
+    }
+
+    const admission = deps.admission;
+    await act<QueueTicket>(
+      deps,
+      request,
+      reply,
+      (visit, actor, ticket) => {
+        visit.routeTo(StationId(toStationId), ticket, { actorId: actor, followedWorkflow });
+      },
+      // The ticket is an argument to the transition rather than a consequence
+      // of it, so it is allocated first — for this request, not from a map.
+      (visit) => ticketForRoute(admission, configuration, visit, StationId(toStationId)),
+    );
   });
 
   app.get(`${V1}/stations/:stationId/queue`, guarded("queue.call"), async (request, reply) => {

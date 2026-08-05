@@ -117,6 +117,7 @@ describe("migration loading", () => {
       "003_login_throttle",
       "004_idempotency",
       "005_tracking_tokens",
+      "006_deferred_current_entry",
     ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
   });

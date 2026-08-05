@@ -18,10 +18,12 @@ import {
   PostgresIdempotencyRepository,
   PostgresLockoutRepository,
   PostgresSessionRepository,
+  PostgresTicketAllocator,
   PostgresVisitRepository,
 } from "@qman/persistence";
 import { EventStream } from "./stream.js";
 import { ConfigurationService } from "./configuration-service.js";
+import { hashToken, issueToken } from "./tokens.js";
 import { AuthService, createDatabaseLockoutStore } from "./auth.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { connect } from "./database.js";
@@ -51,6 +53,8 @@ async function main(): Promise<void> {
   });
 
   const configurationWriter = new PostgresConfigurationWriter();
+  const visitDependencies = { clock: { now }, ids: { next: randomUUID } };
+  const visitRepository = new PostgresVisitRepository(db, visitDependencies);
   const stream = new EventStream();
   const app = buildServer({
     auth,
@@ -76,8 +80,16 @@ async function main(): Promise<void> {
       boards: new PostgresBoardDirectory(db),
     },
     queue: {
-      visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
+      visits: visitRepository,
       events: new PostgresEventRepository(db),
+      admission: {
+        visits: visitRepository,
+        allocator: new PostgresTicketAllocator(db),
+        deps: visitDependencies,
+        configuration: new PostgresConfigurationRepository(db),
+        newTrackingToken: issueToken,
+        hashToken,
+      },
       idempotency: {
         repository: new PostgresIdempotencyRepository(db),
         resolveHospital: () => config.hospitalId,

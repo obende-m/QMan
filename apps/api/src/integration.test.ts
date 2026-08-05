@@ -33,9 +33,12 @@ import {
   PostgresLockoutRepository,
   PostgresSessionRepository,
   PostgresTicketAllocator,
+  PostgresVisitRepository,
   type Database,
 } from "@qman/persistence";
+import { randomUUID } from "node:crypto";
 import { UserId, type Session } from "@qman/domain";
+import { admit } from "./admission.js";
 import { hashPassword } from "./passwords.js";
 import { hashToken, issueToken } from "./tokens.js";
 import { loadMigrations } from "./migrations.js";
@@ -93,6 +96,7 @@ suite("persistence against real PostgreSQL", () => {
         "003_login_throttle",
         "004_idempotency",
         "005_tracking_tokens",
+        "006_deferred_current_entry",
       ]);
     }, 120_000);
 
@@ -136,7 +140,7 @@ suite("persistence against real PostgreSQL", () => {
     it("applies nothing on a second run", async () => {
       const outcome = await migrate(db, loadMigrations());
       expect(outcome.applied).toEqual([]);
-      expect(outcome.skipped).toHaveLength(5);
+      expect(outcome.skipped).toHaveLength(6);
     }, 60_000);
 
     it("refuses to run when an applied migration has been edited", async () => {
@@ -753,6 +757,106 @@ suite("persistence against real PostgreSQL", () => {
         "88888888-8888-8888-8888-888888888888",
       )).toBeNull();
     });
+  });
+
+  describe("admission against the database", () => {
+    it("admits a patient, allocating a ticket and a unique journey code", async () => {
+      const configuration = await new PostgresConfigurationRepository(db).load(HOSPITAL);
+      const visits = new PostgresVisitRepository(db, {
+        clock: { now: () => new Date() },
+        ids: { next: () => randomUUID() },
+      });
+      const allocator = new PostgresTicketAllocator(db);
+
+      // The workflow created earlier was deleted; admit into a fresh one.
+      const workflowId = "12121212-1212-1212-1212-121212121212";
+      await db.transaction((tx) =>
+        new PostgresConfigurationWriter().createWorkflow(
+          tx,
+          BRANCH,
+          {
+            id: workflowId,
+            branchId: BRANCH,
+            name: "Admission test",
+            isDefault: true,
+            stages: [
+              {
+                id: "13131313-1313-1313-1313-131313131313",
+                stationId: STATION,
+                sequence: 1,
+                isRequired: true,
+                allowSkip: false,
+                allowRepeat: false,
+                branchesTo: [],
+              },
+            ],
+          } as never,
+          new Date(),
+        ),
+      );
+
+      const withWorkflow = await new PostgresConfigurationRepository(db).load(HOSPITAL);
+      const admission = await admit(
+        { visits, allocator, deps: { clock: { now: () => new Date() }, ids: { next: () => randomUUID() } } },
+        withWorkflow!,
+        {
+          branchId: BRANCH as never,
+          workflowId: workflowId as never,
+          patient: { name: "Amara Okafor", hospitalNumber: null, phone: null },
+          actorId: USER as never,
+        },
+        issueToken,
+        hashToken,
+      );
+
+      await visits.save(admission.visit, [], {
+        trackingTokenHash: hashToken(admission.trackingToken),
+      });
+
+      expect(admission.visit.journeyCode).toMatch(/^QM-[23456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$/);
+      expect(admission.visit.currentEntry?.queueLabel).toBeTruthy();
+      expect(configuration).not.toBeNull();
+
+      // The token the patient holds resolves to their visit, by its hash only.
+      const found = await visits.findByTrackingToken(hashToken(admission.trackingToken));
+      expect(found?.id).toBe(admission.visit.id);
+    }, 60_000);
+
+    /**
+     * The property that makes a Journey Code usable at a desk: two patients
+     * waiting at once never hold the same one.
+     */
+    it("never issues the same journey code to two open visits", async () => {
+      const withWorkflow = await new PostgresConfigurationRepository(db).load(HOSPITAL);
+      const workflow = withWorkflow!.workflows[0]!;
+      const visits = new PostgresVisitRepository(db, {
+        clock: { now: () => new Date() },
+        ids: { next: () => randomUUID() },
+      });
+      const allocator = new PostgresTicketAllocator(db);
+
+      const codes = new Set<string>();
+      for (let i = 0; i < 12; i += 1) {
+        const admission = await admit(
+          { visits, allocator, deps: { clock: { now: () => new Date() }, ids: { next: () => randomUUID() } } },
+          withWorkflow!,
+          {
+            branchId: BRANCH as never,
+            workflowId: workflow.id as never,
+            patient: { name: `Patient ${i}`, hospitalNumber: null, phone: null },
+            actorId: USER as never,
+          },
+          issueToken,
+          hashToken,
+        );
+        await visits.save(admission.visit, [], {
+          trackingTokenHash: hashToken(admission.trackingToken),
+        });
+        codes.add(admission.visit.journeyCode);
+      }
+
+      expect(codes.size).toBe(12);
+    }, 90_000);
   });
 
   describe("transactions", () => {
