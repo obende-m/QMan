@@ -32,7 +32,15 @@ export type ApiFailure =
   | "conflict"
   | "not_found"
   | "rate_limited"
+  /** The request was understood and the resulting state was refused. */
+  | "rejected"
   | "server";
+
+export interface FieldProblem {
+  readonly path: string;
+  readonly message: string;
+  readonly severity: "error" | "warning";
+}
 
 export class ApiError extends Error {
   constructor(
@@ -43,6 +51,12 @@ export class ApiError extends Error {
     readonly permission?: string,
     /** Correlates a report with the server's log. */
     readonly requestId?: string,
+    /**
+     * What the domain refused, when it refused something specific. Present on
+     * a rejection so a form can mark the field rather than showing one message
+     * above everything.
+     */
+    readonly problems: readonly FieldProblem[] = [],
   ) {
     super(message);
     this.name = "ApiError";
@@ -70,6 +84,10 @@ function failureFor(status: number): ApiFailure {
   if (status === 403) return "forbidden";
   if (status === 404) return "not_found";
   if (status === 409) return "conflict";
+  // A validation rejection. Distinguished from a server fault because it is
+  // not retryable — the same request will be refused for the same reason —
+  // and because it carries problems a screen can point at a field with.
+  if (status === 422) return "rejected";
   if (status === 429) return "rate_limited";
   return "server";
 }
@@ -172,6 +190,7 @@ export class ApiClient {
         response.status,
         typeof body?.["permission"] === "string" ? body["permission"] : undefined,
         typeof body?.["requestId"] === "string" ? body["requestId"] : undefined,
+        Array.isArray(body?.["problems"]) ? (body["problems"] as FieldProblem[]) : [],
       );
     }
 
