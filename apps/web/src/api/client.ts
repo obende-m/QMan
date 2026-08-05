@@ -134,7 +134,11 @@ export class ApiClient {
 
   constructor(options: ApiClientOptions) {
     this.#baseUrl = options.baseUrl.replace(/\/$/, "");
-    this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
+    // Resolved at call time, not bound at construction. A client built when the
+    // module loads would otherwise capture whichever fetch existed then, and
+    // never see one installed afterwards.
+    this.#fetch =
+      options.fetch ?? ((input, init) => globalThis.fetch(input as never, init));
     this.#readCookies =
       options.readCookies ??
       (() => (typeof document === "undefined" ? "" : document.cookie));
