@@ -5,6 +5,7 @@ import { loadMigrations, migrationsDirectory } from "./migrations.js";
 const MINIMUM = {
   DATABASE_URL: "postgres://qman:secret@db.example:5432/qman",
   QMAN_HOSPITAL_ID: "11111111-1111-1111-1111-111111111111",
+  QMAN_ALLOWED_ORIGINS: "https://qman.hospital.example",
 } satisfies NodeJS.ProcessEnv;
 
 describe("configuration", () => {
@@ -44,12 +45,43 @@ describe("configuration", () => {
   it("is quiet by default", () => {
     expect(loadConfig(MINIMUM).logLevel).toBe("info");
   });
+
+  /**
+   * A control that is off unless configured is a control most deployments do
+   * not have. There is deliberately no permissive default here.
+   */
+  it("requires the origins allowed to make state-changing requests", () => {
+    const { QMAN_ALLOWED_ORIGINS: _omitted, ...without } = MINIMUM;
+    expect(() => loadConfig(without)).toThrow(/QMAN_ALLOWED_ORIGINS/);
+  });
+
+  it("accepts several origins and rejects anything that is not one", () => {
+    expect(
+      loadConfig({
+        ...MINIMUM,
+        QMAN_ALLOWED_ORIGINS: "https://qman.example, https://board.qman.example",
+      }).allowedOrigins,
+    ).toEqual(["https://qman.example", "https://board.qman.example"]);
+
+    // A path or a trailing slash never matches an Origin header, so it is
+    // refused at startup rather than silently rejecting every request.
+    expect(() =>
+      loadConfig({ ...MINIMUM, QMAN_ALLOWED_ORIGINS: "https://qman.example/app" }),
+    ).toThrow(/origin only/);
+    expect(() => loadConfig({ ...MINIMUM, QMAN_ALLOWED_ORIGINS: "qman.example" })).toThrow(
+      /not a URL/,
+    );
+  });
 });
 
 describe("migration loading", () => {
   it("finds the migrations that ship with the persistence package", () => {
     const migrations = loadMigrations(migrationsDirectory());
-    expect(migrations.map((m) => m.name)).toEqual(["001_initial", "002_session_tokens"]);
+    expect(migrations.map((m) => m.name)).toEqual([
+      "001_initial",
+      "002_session_tokens",
+      "003_login_throttle",
+    ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
   });
 });

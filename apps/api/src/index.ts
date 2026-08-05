@@ -8,8 +8,13 @@
  * one that reaches a half-migrated QMan does not know to.
  */
 import { randomUUID } from "node:crypto";
-import { migrate, PostgresAccountRepository, PostgresSessionRepository } from "@qman/persistence";
-import { AuthService, createMemoryLockoutStore } from "./auth.js";
+import {
+  migrate,
+  PostgresAccountRepository,
+  PostgresLockoutRepository,
+  PostgresSessionRepository,
+} from "@qman/persistence";
+import { AuthService, createDatabaseLockoutStore } from "./auth.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { connect } from "./database.js";
 import { createLogger } from "./logging.js";
@@ -28,11 +33,12 @@ async function main(): Promise<void> {
     alreadyApplied: outcome.skipped.length,
   });
 
+  const now = (): Date => new Date();
   const auth = new AuthService({
     accounts: new PostgresAccountRepository(db),
     sessions: new PostgresSessionRepository(db),
-    lockouts: createMemoryLockoutStore(),
-    now: () => new Date(),
+    lockouts: createDatabaseLockoutStore(new PostgresLockoutRepository(db), now),
+    now,
     newId: () => randomUUID(),
   });
 
@@ -41,6 +47,7 @@ async function main(): Promise<void> {
     logger,
     resolveHospital: () => config.hospitalId,
     secureCookies: config.secureCookies,
+    allowedOrigins: config.allowedOrigins,
   });
 
   /**
@@ -73,6 +80,7 @@ async function main(): Promise<void> {
     port: config.port,
     hospitalId: config.hospitalId,
     secureCookies: config.secureCookies,
+    allowedOrigins: config.allowedOrigins,
   });
 
   if (!config.secureCookies) {

@@ -32,30 +32,53 @@ import {
   type SessionPolicy,
   type UserId,
 } from "@qman/domain";
-import type { AccountRepository, SessionRepository, StoredAccount } from "@qman/persistence";
+import type {
+  AccountRepository,
+  LockoutRepository,
+  SessionRepository,
+  StoredAccount,
+} from "@qman/persistence";
 import { hashPassword, needsRehash, verifyPassword } from "./passwords.js";
 import { hashToken, issueToken } from "./tokens.js";
 
 /**
  * Where lockout counters live.
  *
- * A port, because the process-local implementation below is not the final
- * answer. Counters held in memory are lost on restart and are not shared
- * between instances, which weakens lockout to "per process, until the next
- * deploy". For a single hospital server that is a reasonable V1 and an honest
- * limitation; for more than one instance it must become a table.
+ * Asynchronous because the real implementation is a table. Counters held in
+ * process memory are lost on restart and are not shared between instances,
+ * which weakens the control to "per process, until the next deploy" — an
+ * attacker who waits for a deploy gets their attempts back.
  */
 export interface LockoutStore {
-  get(key: string): LockoutState;
-  set(key: string, state: LockoutState): void;
+  get(hospitalId: string, usernameKey: string): Promise<LockoutState>;
+  set(hospitalId: string, usernameKey: string, state: LockoutState): Promise<void>;
 }
 
+/** Backed by `login_throttle`. What a deployment should use. */
+export function createDatabaseLockoutStore(
+  repository: LockoutRepository,
+  now: () => Date,
+): LockoutStore {
+  return {
+    get: (hospitalId, usernameKey) => repository.get(hospitalId, usernameKey),
+    set: (hospitalId, usernameKey, state) =>
+      repository.set(hospitalId, usernameKey, state, now()),
+  };
+}
+
+/**
+ * Process-local. For tests, and for nothing else — it is the weaker behaviour
+ * the table above exists to replace.
+ */
 export function createMemoryLockoutStore(): LockoutStore {
   const states = new Map<string, LockoutState>();
+  const key = (hospitalId: string, usernameKey: string): string =>
+    `${hospitalId}:${usernameKey.toLowerCase()}`;
   return {
-    get: (key) => states.get(key) ?? NO_LOCKOUT,
-    set: (key, state) => {
-      states.set(key, state);
+    get: async (hospitalId, usernameKey) =>
+      states.get(key(hospitalId, usernameKey)) ?? NO_LOCKOUT,
+    set: async (hospitalId, usernameKey, state) => {
+      states.set(key(hospitalId, usernameKey), state);
     },
   };
 }
@@ -78,6 +101,13 @@ export interface Credentials {
   readonly branchId: BranchId | null;
 }
 
+export interface ResolvedSession {
+  readonly user: AuthenticatedUser;
+  readonly session: Session;
+  /** The tenant the account belongs to, as stored. */
+  readonly hospitalId: string;
+}
+
 export type SignInResult =
   | {
       readonly ok: true;
@@ -95,17 +125,6 @@ function authenticatedUser(
   return { account: stored.account, permissions: stored.permissions, branchId };
 }
 
-/**
- * Lockout is keyed by hospital and username, not by IP.
- *
- * An IP is shared by an entire clinic behind one router, so locking on it locks
- * the whole reception desk out because one person mistyped. Rate limiting by
- * address belongs in front of this, and does a different job.
- */
-function lockoutKey(hospitalId: string, username: string): string {
-  return `${hospitalId}:${username.toLowerCase()}`;
-}
-
 export class AuthService {
   readonly #deps: AuthDependencies;
 
@@ -117,9 +136,9 @@ export class AuthService {
     const { accounts, sessions, lockouts, now, newId } = this.#deps;
     const policy = this.#deps.lockoutPolicy ?? DEFAULT_LOCKOUT_POLICY;
     const at = now();
-    const key = lockoutKey(credentials.hospitalId, credentials.username);
+    const { hospitalId, username } = credentials;
 
-    const lockout = lockouts.get(key);
+    const lockout = await lockouts.get(hospitalId, username);
     if (isLocked(lockout, at)) {
       // The one case that does not use the uniform message: someone genuinely
       // locked out needs to know why, and that the wait is finite.
@@ -153,7 +172,7 @@ export class AuthService {
     );
 
     if (stored === null || !matched) {
-      lockouts.set(key, recordFailure(lockout, at, policy));
+      await lockouts.set(hospitalId, username, recordFailure(lockout, at, policy));
       return { ok: false, failure: invalidCredentials() as Extract<AuthOutcome, { ok: false }> };
     }
 
@@ -171,7 +190,7 @@ export class AuthService {
       };
     }
 
-    lockouts.set(key, NO_LOCKOUT);
+    await lockouts.set(hospitalId, username, NO_LOCKOUT);
 
     // The only moment the plaintext is in hand, and so the only moment a
     // digest created at an older cost can be brought up to the current one.
@@ -207,7 +226,7 @@ export class AuthService {
    * account is still enabled. A session outliving the account it belongs to is
    * how a dismissed employee keeps working.
    */
-  async resolve(token: string): Promise<{ user: AuthenticatedUser; session: Session } | null> {
+  async resolve(token: string): Promise<ResolvedSession | null> {
     const { accounts, sessions, now } = this.#deps;
     const policy = this.#deps.sessionPolicy ?? DEFAULT_SESSION_POLICY;
     const at = now();
@@ -231,7 +250,13 @@ export class AuthService {
     touch(session, at);
     await sessions.save(session);
 
-    return { user: authenticatedUser(stored, session.branchId), session };
+    return {
+      user: authenticatedUser(stored, session.branchId),
+      session,
+      // Carried from the account, never from the request. Authorization
+      // compares the two, and a request that disagrees is refused.
+      hospitalId: stored.hospitalId,
+    };
   }
 
   async signOut(token: string, reason: SessionEndReason = "signed_out"): Promise<void> {

@@ -11,14 +11,29 @@
  * The domain has a vocabulary — call, route, complete, recall — and an API of
  * `PATCH /queue_entries/:id` would discard it, pushing the state machine's
  * rules back out to every caller that has to know which field to set.
+ *
+ * An unsafe request passes four independent controls before it reaches a
+ * handler: it must come from a known origin, carry a CSRF token it could only
+ * have read from its own cookie, belong to a live session, and hold the
+ * permission the route declares. None of them is sufficient alone.
  */
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { AuthenticatedUser, Session } from "@qman/domain";
 import type { AuthService } from "./auth.js";
+import {
+  readSessionToken,
+  requirePermission,
+  requireSignedIn,
+  SESSION_COOKIE,
+  type GuardDependencies,
+} from "./authorization.js";
+import { CSRF_COOKIE, issueCsrfToken, verifyCsrf } from "./csrf.js";
+import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { silentLogger, type Logger } from "./logging.js";
 
-export const SESSION_COOKIE = "qman_session";
+export { SESSION_COOKIE };
+export { CSRF_COOKIE, CSRF_HEADER } from "./csrf.js";
 
 export interface ServerOptions {
   readonly auth: AuthService;
@@ -38,13 +53,16 @@ export interface ServerOptions {
    * would make sign-in silently fail on a developer's machine.
    */
   readonly secureCookies: boolean;
+  /** Origins permitted to make unsafe requests. The three QMan surfaces. */
+  readonly allowedOrigins: readonly string[];
+  readonly rateLimiter?: RateLimiter;
   readonly now?: () => Date;
 }
 
 declare module "fastify" {
   interface FastifyRequest {
     requestId: string;
-    authenticated?: { user: AuthenticatedUser; session: Session };
+    authenticated?: { user: AuthenticatedUser; session: Session; hospitalId: string };
   }
 }
 
@@ -54,49 +72,52 @@ interface Credentials {
   branchId?: unknown;
 }
 
-function readToken(request: FastifyRequest): string | null {
-  const header = request.headers.cookie;
-  if (typeof header !== "string") return null;
-
-  for (const part of header.split(";")) {
-    const [name, ...rest] = part.trim().split("=");
-    if (name === SESSION_COOKIE) return decodeURIComponent(rest.join("="));
-  }
-  return null;
+interface CookieOptions {
+  readonly secure: boolean;
+  readonly httpOnly: boolean;
+  readonly maxAge?: number;
 }
 
-function setSessionCookie(reply: FastifyReply, token: string, secure: boolean): void {
-  const attributes = [
-    `${SESSION_COOKIE}=${encodeURIComponent(token)}`,
-    "Path=/",
-    // Unreadable from JavaScript, so a script injected into any of the three
-    // surfaces cannot read the session out of document.cookie.
-    "HttpOnly",
-    // Lax rather than Strict: the display board and patient tracker are opened
-    // from links and QR codes, and Strict would drop the cookie on arrival.
-    // Lax still withholds it from cross-site POSTs, which is the attack.
-    "SameSite=Lax",
-  ];
-  if (secure) attributes.push("Secure");
-  reply.header("Set-Cookie", attributes.join("; "));
+function cookie(name: string, value: string, options: CookieOptions): string {
+  const attributes = [`${name}=${encodeURIComponent(value)}`, "Path=/"];
+  // Unreadable from JavaScript, so a script injected into any surface cannot
+  // read the session out of document.cookie. The CSRF cookie is deliberately
+  // the exception: the application's own code has to read it to echo it back.
+  if (options.httpOnly) attributes.push("HttpOnly");
+  // Lax rather than Strict: the display board and patient tracker are opened
+  // from links and QR codes, and Strict would drop the cookie on arrival. Lax
+  // still withholds it from cross-site POSTs, which is the attack.
+  attributes.push("SameSite=Lax");
+  if (options.secure) attributes.push("Secure");
+  if (options.maxAge !== undefined) attributes.push(`Max-Age=${options.maxAge}`);
+  return attributes.join("; ");
 }
 
-function clearSessionCookie(reply: FastifyReply, secure: boolean): void {
-  const attributes = [
-    `${SESSION_COOKIE}=`,
-    "Path=/",
-    "HttpOnly",
-    "SameSite=Lax",
-    "Max-Age=0",
-  ];
-  if (secure) attributes.push("Secure");
-  reply.header("Set-Cookie", attributes.join("; "));
+function startSession(reply: FastifyReply, token: string, csrf: string, secure: boolean): void {
+  void reply.header("Set-Cookie", [
+    cookie(SESSION_COOKIE, token, { secure, httpOnly: true }),
+    cookie(CSRF_COOKIE, csrf, { secure, httpOnly: false }),
+  ]);
+}
+
+function endSessionCookies(reply: FastifyReply, secure: boolean): void {
+  void reply.header("Set-Cookie", [
+    cookie(SESSION_COOKIE, "", { secure, httpOnly: true, maxAge: 0 }),
+    cookie(CSRF_COOKIE, "", { secure, httpOnly: false, maxAge: 0 }),
+  ]);
 }
 
 export function buildServer(options: ServerOptions): FastifyInstance {
   const logger = options.logger ?? silentLogger();
   const now = options.now ?? (() => new Date());
+  const rateLimiter = options.rateLimiter ?? createRateLimiter();
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+
+  const guards: GuardDependencies = {
+    auth: options.auth,
+    logger,
+    resolveHospital: options.resolveHospital,
+  };
 
   /**
    * One identifier per request, minted here or adopted from a proxy that
@@ -109,6 +130,24 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       typeof supplied === "string" && supplied.length > 0 && supplied.length <= 128
         ? supplied
         : randomUUID();
+  });
+
+  /**
+   * CSRF runs before anything reads the body, so a forged request is refused
+   * without the server acting on what it carried.
+   */
+  app.addHook("onRequest", async (request, reply) => {
+    const verdict = verifyCsrf(request, options.allowedOrigins);
+    if (verdict.ok) return;
+
+    logger.warn("cross-site request refused", {
+      requestId: request.requestId,
+      path: request.url,
+      method: request.method,
+      reason: verdict.reason,
+      origin: request.headers.origin ?? null,
+    });
+    return reply.status(403).send({ error: "That request could not be verified." });
   });
 
   app.addHook("onResponse", async (request, reply) => {
@@ -139,6 +178,23 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.post("/api/auth/login", async (request, reply) => {
+    /**
+     * Rate limiting sits in front of lockout and guards the opposite attack:
+     * one password tried against many usernames, where no single account ever
+     * reaches its own limit.
+     */
+    const limit = rateLimiter.check(request.ip, now());
+    if (!limit.allowed) {
+      logger.warn("sign-in rate limited", {
+        requestId: request.requestId,
+        address: request.ip,
+      });
+      return reply
+        .status(429)
+        .header("Retry-After", Math.ceil((limit.retryAfter.getTime() - now().getTime()) / 1000))
+        .send({ error: "Too many sign-in attempts. Wait a moment and try again." });
+    }
+
     const body = (request.body ?? {}) as Credentials;
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
@@ -153,9 +209,8 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       hospitalId,
       username,
       password,
-      userAgent: typeof request.headers["user-agent"] === "string"
-        ? request.headers["user-agent"]
-        : "",
+      userAgent:
+        typeof request.headers["user-agent"] === "string" ? request.headers["user-agent"] : "",
       branchId: branchId as never,
     });
 
@@ -186,34 +241,41 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       device: result.session.device,
     });
 
-    setSessionCookie(reply, result.token, options.secureCookies);
-    return reply.status(200).send({ user: describeUser(result.user, now()) });
+    // A fresh CSRF token per session. Reusing one across sessions would let a
+    // token captured from a shared workstation stay valid for the next person.
+    const csrf = issueCsrfToken();
+    startSession(reply, result.token, csrf, options.secureCookies);
+    return reply.status(200).send({ user: describeUser(result.user, now()), csrfToken: csrf });
   });
 
   app.post("/api/auth/logout", async (request, reply) => {
-    const token = readToken(request);
+    const token = readSessionToken(request);
     if (token !== null) await options.auth.signOut(token);
-    clearSessionCookie(reply, options.secureCookies);
+    endSessionCookies(reply, options.secureCookies);
     // 204 whether or not a session was found. Reporting the difference would
     // tell an unauthenticated caller whether a token it holds is still live.
     return reply.status(204).send();
   });
 
-  app.get("/api/auth/me", async (request, reply) => {
-    const token = readToken(request);
-    if (token === null) {
-      return reply.status(401).send({ error: "Not signed in." });
-    }
+  app.get(
+    "/api/auth/me",
+    { preHandler: requireSignedIn(guards) },
+    async (request, reply) => {
+      return reply.status(200).send({ user: describeUser(request.authenticated!.user, now()) });
+    },
+  );
 
-    const resolved = await options.auth.resolve(token);
-    if (resolved === null) {
-      clearSessionCookie(reply, options.secureCookies);
-      return reply.status(401).send({ error: "Your session has ended. Sign in again." });
-    }
-
-    request.authenticated = resolved;
-    return reply.status(200).send({ user: describeUser(resolved.user, now()) });
-  });
+  /**
+   * Present so authorization is exercised by the suite from the moment it
+   * exists, rather than first being tried when the queue endpoints land.
+   */
+  app.get(
+    "/api/sessions",
+    { preHandler: requirePermission(guards, "admin.users") },
+    async (_request, reply) => {
+      return reply.status(200).send({ sessions: [] });
+    },
+  );
 
   app.get("/api/health", async (_request, reply) => {
     return reply.status(200).send({ status: "ok", at: now().toISOString() });

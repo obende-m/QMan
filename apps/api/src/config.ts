@@ -20,6 +20,7 @@ export interface Config {
   readonly hospitalId: string;
   readonly logLevel: LogLevel;
   readonly secureCookies: boolean;
+  readonly allowedOrigins: readonly string[];
 }
 
 export class ConfigurationError extends Error {
@@ -86,7 +87,44 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
    */
   const secureCookies = boolean(env, "QMAN_SECURE_COOKIES", true);
 
+  /**
+   * Origins allowed to make state-changing requests — where the three QMan
+   * surfaces are served from.
+   *
+   * Required, with no default. A default of "any origin" would disable CSRF
+   * protection for every deployment that did not know to set it, and a control
+   * that is off unless configured is a control most deployments do not have.
+   * Each entry is parsed, so a trailing slash or a path is rejected here rather
+   * than silently never matching an Origin header.
+   */
+  const origins = required(
+    env,
+    "QMAN_ALLOWED_ORIGINS",
+    "It is the comma-separated list of origins the web app is served from, for example https://qman.hospital.example.",
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "");
+
+  const allowedOrigins = origins.map((value) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new ConfigurationError(
+        `QMAN_ALLOWED_ORIGINS contains "${value}", which is not a URL. Use scheme://host[:port].`,
+      );
+    }
+    if (parsed.origin !== value.replace(/\/$/, "")) {
+      throw new ConfigurationError(
+        `QMAN_ALLOWED_ORIGINS contains "${value}". Give an origin only — "${parsed.origin}" — with no path or trailing slash.`,
+      );
+    }
+    return parsed.origin;
+  });
+
   return {
+    allowedOrigins,
     databaseUrl,
     // Most managed providers require TLS; a server on the hospital's own LAN
     // typically has none configured.

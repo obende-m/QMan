@@ -1190,3 +1190,66 @@ PostgreSQL, present on every provider above. Portability here means portable
 across PostgreSQL deployments, not portable across database engines — the
 concurrency guarantees the queue depends on are worth more than a theoretical
 migration to a different vendor that no hospital has ever asked for.
+
+## ADR-052 — Four independent controls guard an unsafe request
+
+**Decision.** A state-changing request reaches a handler only after passing all
+of: a known `Origin` (or `Referer`), a CSRF token it could only have read from
+its own cookie, a live session, and the permission the route declares. Each is
+enforced in one place, and none is sufficient alone.
+
+**Why layered.** `SameSite=Lax` already withholds the session cookie from
+cross-site POSTs and is the most effective single control here. But it is one
+control, enforced by the browser, and the browsers on machines a hospital
+actually owns are not always current. The origin check does not depend on cookie
+policy; the double-submit token does not depend on the origin header; the
+permission check does not depend on either.
+
+**Why the CSRF token is required only once a session exists.** Sign-in cannot
+present a token — it is issued with the session it protects, and a browser
+arriving at a login form has neither. Requiring one there would not be stricter,
+it would make signing in impossible. That leaves login guarded by the origin
+check alone, which is the right weight: login CSRF forces a victim's browser to
+sign in as the attacker, but cannot read their data or act as them. Every
+request that can act on a hospital's data carries a session, and so carries a
+token.
+
+**Why the CSRF cookie is not HttpOnly.** It is the one cookie the application's
+own JavaScript must read, to echo it into a header. A cross-site page can cause
+a cookie to be *sent* but cannot *read* it, which is precisely what the
+same-origin policy guarantees — and precisely what makes the pattern work.
+
+**401 and 403 are different answers.** 401 means "I do not know who you are" and
+a client should offer a sign-in. 403 means "I know who you are and you may not
+do this", where offering a sign-in would be nonsense. The refused permission is
+named in the 403 body, because the caller is a member of staff who needs to ask
+an administrator for the right thing, not an attacker mapping endpoints.
+
+## ADR-053 — Lockout and rate limiting guard opposite attacks
+
+**Decision.** Both, keyed differently. Account lockout is keyed by hospital and
+username and lives in `login_throttle`. Login rate limiting is keyed by source
+address and lives in process memory.
+
+**Why both.** Lockout stops a password list worked against one member of staff.
+It is blind to the opposite shape — one common password tried against a thousand
+usernames — because no single account ever reaches its limit. Rate limiting
+stops that, by capping attempts from a source whatever account they name.
+
+Neither can do the other's job, and the reason is the key. A whole clinic sits
+behind one address, so an address limit loose enough not to catch a reception
+desk at shift change is far too loose to protect one account. A username limit
+tight enough to protect one account does nothing about spraying.
+
+**Why lockout is in the database and rate limiting is not.** Counters in process
+memory are lost on restart. For lockout that is a real weakness: an attacker who
+waits for a deploy gets their attempts back, and a second instance never knew
+about the first one's count. For rate limiting the window is a minute, so a
+restart forgives at most a minute of history — worth little. A deployment that
+grows past one server should move rate limiting into the proxy that already sees
+every request, rather than into the database.
+
+**Why no foreign key from `login_throttle` to `users`.** Failures are recorded
+for usernames that do not exist. Recording them only for real accounts would
+make the table an oracle for which usernames are real — the exact thing the
+uniform failure message exists to prevent.

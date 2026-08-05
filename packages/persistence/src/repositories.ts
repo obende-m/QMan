@@ -1,9 +1,11 @@
 import {
   DEFAULT_EVENT_PAGE_SIZE,
+  NO_LOCKOUT,
   type BranchId,
   type EventQuery,
   type EventRecord,
   type JourneyCode,
+  type LockoutState,
   type Session,
   type StationId,
   type UserId,
@@ -546,6 +548,77 @@ export class PostgresAccountRepository implements AccountRepository {
        WHERE id = $1`,
       [userId, hash, salt, at],
     );
+  }
+}
+
+/**
+ * Lockout counters, durable across restarts and shared between instances.
+ *
+ * Read and written on the sign-in path, so both operations are single
+ * statements. The state itself is the domain's — this stores and returns it
+ * without interpreting the rolling window, which stays one implementation in
+ * `@qman/domain` rather than two that can disagree.
+ */
+export interface LockoutRepository {
+  get(hospitalId: string, usernameKey: string): Promise<LockoutState>;
+  set(
+    hospitalId: string,
+    usernameKey: string,
+    state: LockoutState,
+    at: Date,
+  ): Promise<void>;
+  /** Discards counters last touched before the given time. */
+  prune(before: Date): Promise<number>;
+}
+
+interface LoginThrottleRow {
+  failures: Date[];
+  locked_until: Date | null;
+}
+
+export class PostgresLockoutRepository implements LockoutRepository {
+  constructor(private readonly db: Database) {}
+
+  async get(hospitalId: string, usernameKey: string): Promise<LockoutState> {
+    const [row] = await this.db.query<LoginThrottleRow>(
+      `SELECT failures, locked_until FROM login_throttle
+       WHERE hospital_id = $1 AND username_key = $2`,
+      [hospitalId, usernameKey.toLowerCase()],
+    );
+    if (row === undefined) return NO_LOCKOUT;
+    return { failures: row.failures, lockedUntil: row.locked_until };
+  }
+
+  async set(
+    hospitalId: string,
+    usernameKey: string,
+    state: LockoutState,
+    at: Date,
+  ): Promise<void> {
+    await this.db.query(
+      `INSERT INTO login_throttle
+         (hospital_id, username_key, failures, locked_until, updated_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (hospital_id, username_key) DO UPDATE
+         SET failures = EXCLUDED.failures,
+             locked_until = EXCLUDED.locked_until,
+             updated_at = EXCLUDED.updated_at`,
+      [hospitalId, usernameKey.toLowerCase(), [...state.failures], state.lockedUntil, at],
+    );
+  }
+
+  /**
+   * A row still holding a lock is kept even if it is stale, so pruning cannot
+   * be used to clear an active lockout by waiting for maintenance to run.
+   */
+  async prune(before: Date): Promise<number> {
+    const rows = await this.db.query<{ hospital_id: string }>(
+      `DELETE FROM login_throttle
+       WHERE updated_at < $1 AND (locked_until IS NULL OR locked_until < $1)
+       RETURNING hospital_id`,
+      [before],
+    );
+    return rows.length;
   }
 }
 

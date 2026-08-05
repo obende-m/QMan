@@ -11,9 +11,10 @@ import type { AccountRepository, SessionRepository, StoredAccount } from "@qman/
 import { AuthService, createMemoryLockoutStore } from "./auth.js";
 import { hashPassword } from "./passwords.js";
 import { hashToken } from "./tokens.js";
-import { buildServer, SESSION_COOKIE } from "./server.js";
+import { buildServer, CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE } from "./server.js";
 import { createLogger } from "./logging.js";
 
+const ORIGIN = "https://qman.hospital.example";
 const HOSPITAL = "11111111-1111-1111-1111-111111111111";
 const OTHER_HOSPITAL = "22222222-2222-2222-2222-222222222222";
 const PASSWORD = "a reasonable passphrase";
@@ -119,15 +120,29 @@ function harness(accounts: FakeAccounts, sessions: FakeSessions, lines: string[]
     auth,
     resolveHospital: () => HOSPITAL,
     secureCookies: true,
+    allowedOrigins: [ORIGIN],
     logger: createLogger({ write: (line) => lines.push(line) }),
     now: () => new Date("2026-03-09T09:00:00Z"),
   });
   return { app, auth };
 }
 
+/** The session cookie alone, as `name=value`. */
 function cookieFrom(header: string | string[] | undefined): string {
-  const value = Array.isArray(header) ? header[0]! : (header ?? "");
-  return value.split(";")[0]!;
+  const values = Array.isArray(header) ? header : [header ?? ""];
+  return values.find((v) => v.startsWith(SESSION_COOKIE))!.split(";")[0]!;
+}
+
+/** Every cookie the response set, as a browser would send them back. */
+function allCookies(header: string | string[] | undefined): string {
+  const values = Array.isArray(header) ? header : [header ?? ""];
+  return values.map((v) => v.split(";")[0]).join("; ");
+}
+
+function csrfFrom(header: string | string[] | undefined): string {
+  const values = Array.isArray(header) ? header : [header ?? ""];
+  const pair = values.find((v) => v.startsWith(CSRF_COOKIE))!.split(";")[0]!;
+  return decodeURIComponent(pair.slice(CSRF_COOKIE.length + 1));
 }
 
 describe("sign-in", () => {
@@ -145,6 +160,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -162,6 +178,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -175,6 +192,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -191,6 +209,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -206,11 +225,13 @@ describe("sign-in", () => {
     const wrong = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: "not the password" },
     });
     const missing = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "nobody", password: "not the password" },
     });
 
@@ -243,6 +264,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "adams", password: PASSWORD },
     });
 
@@ -258,6 +280,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -271,6 +294,7 @@ describe("sign-in", () => {
       await app.inject({
         method: "POST",
         url: "/api/auth/login",
+        headers: { origin: ORIGIN },
         payload: { username: "ifeoma", password: "wrong" },
       });
     }
@@ -279,6 +303,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -292,6 +317,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "IFEOMA", password: PASSWORD },
     });
     expect(response.statusCode).toBe(200);
@@ -302,6 +328,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "", password: "" },
     });
     expect(response.statusCode).toBe(400);
@@ -319,6 +346,7 @@ describe("sign-in", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -344,9 +372,15 @@ describe("session resolution", () => {
     const login = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
-    return { app, cookie: cookieFrom(login.headers["set-cookie"]), lines };
+    return {
+      app,
+      cookie: allCookies(login.headers["set-cookie"]),
+      csrf: csrfFrom(login.headers["set-cookie"]),
+      lines,
+    };
   }
 
   it("identifies the holder of a session cookie", async () => {
@@ -378,9 +412,13 @@ describe("session resolution", () => {
   });
 
   it("stops honouring a session after sign-out", async () => {
-    const { app, cookie } = await signedIn();
+    const { app, cookie, csrf } = await signedIn();
 
-    const out = await app.inject({ method: "POST", url: "/api/auth/logout", headers: { cookie } });
+    const out = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: { cookie, origin: ORIGIN, [CSRF_HEADER]: csrf },
+    });
     expect(out.statusCode).toBe(204);
 
     const after = await app.inject({ method: "GET", url: "/api/auth/me", headers: { cookie } });
@@ -389,10 +427,16 @@ describe("session resolution", () => {
 
   it("answers sign-out identically whether or not the session existed", async () => {
     const { app } = await signedIn();
+    // A well-formed request in every respect except that its session is not
+    // one this server issued. It must not be told that.
     const unknown = await app.inject({
       method: "POST",
       url: "/api/auth/logout",
-      headers: { cookie: `${SESSION_COOKIE}=never-issued` },
+      headers: {
+        cookie: `${SESSION_COOKIE}=never-issued; ${CSRF_COOKIE}=matching`,
+        origin: ORIGIN,
+        [CSRF_HEADER]: "matching",
+      },
     });
     expect(unknown.statusCode).toBe(204);
   });
@@ -454,6 +498,7 @@ describe("request identity and logging", () => {
     await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
 
@@ -478,11 +523,13 @@ describe("request identity and logging", () => {
     const login = await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: PASSWORD },
     });
     await app.inject({
       method: "POST",
       url: "/api/auth/login",
+      headers: { origin: ORIGIN },
       payload: { username: "ifeoma", password: "wrong one" },
     });
 
