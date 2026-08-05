@@ -196,7 +196,7 @@ export function AdminPortal({
             <TicketsSection store={config} problems={problems} />
           )}
           {section === "roles" && <RolesSection store={config} />}
-          {section === "sessions" && <SessionsSection auth={auth} />}
+          {section === "sessions" && <SessionsSection />}
         </div>
       </div>
     </div>

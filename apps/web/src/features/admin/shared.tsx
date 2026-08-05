@@ -12,14 +12,24 @@ import type { SaveResult } from "../../data/config-store.js";
  * identical to a successful save.
  */
 export interface Feedback {
-  tone: "saved" | "warning" | "error";
+  tone: "saving" | "saved" | "warning" | "error";
   messages: string[];
 }
 
 export function useSaveFeedback() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  const report = useCallback((result: SaveResult) => {
+  /**
+   * Takes the promise a save now returns.
+   *
+   * Saving reaches the server, so the outcome arrives later than the keystroke
+   * that caused it. Reporting on the promise keeps every call site a single
+   * expression, and keeps "saving" from being a state each section tracks for
+   * itself.
+   */
+  const report = useCallback(async (pending: Promise<SaveResult> | SaveResult) => {
+    setFeedback({ tone: "saving", messages: [] });
+    const result = await pending;
     if (!result.ok) {
       setFeedback({
         tone: "error",
@@ -43,6 +53,14 @@ export function useSaveFeedback() {
 
 export function SaveFeedback({ feedback }: { feedback: Feedback | null }) {
   if (!feedback) return null;
+
+  if (feedback.tone === "saving") {
+    return (
+      <p role="status" className="text-body-sm text-on-surface-variant">
+        Saving…
+      </p>
+    );
+  }
 
   if (feedback.tone === "saved") {
     return (

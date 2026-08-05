@@ -3,7 +3,7 @@ import { BriefcaseMedical, LogIn, TriangleAlert } from "lucide-react";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import type { AuthStore } from "../../data/auth-store.js";
-import { configStore } from "../../data/config-store.js";
+import { stores } from "../../data/runtime-stores.js";
 import { inputClass, labelClass } from "../../data/useConfig.js";
 
 /**
@@ -24,32 +24,21 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const passwordProviders = auth.providers.filter((p) => p.kind === "password");
-  const redirectProviders = auth.providers.filter((p) => p.kind === "redirect");
-
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError(null);
 
-    const provider = passwordProviders[0];
-    if (!provider) {
-      setError("No sign-in method is configured.");
-      setBusy(false);
-      return;
-    }
-
-    const result = await auth.signIn(
-      provider.id,
-      { username, password },
-      { userAgent: navigator.userAgent },
-    );
+    // One sign-in path. The provider chooser existed because the browser held
+    // several identity providers; the server exposes one endpoint and decides
+    // for itself which provider an account belongs to.
+    const result = await auth.signIn(username, password);
 
     setBusy(false);
     if (result.ok) {
       onSignedIn();
     } else {
-      setError(result.message ?? "Could not sign you in.");
+      setError(result.message);
       setPassword("");
     }
   };
@@ -69,7 +58,7 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
               QMan
             </p>
             <p className="mt-1 text-body-sm text-on-surface-variant">
-              {configStore.config.profile.name}
+              {stores.config.config.profile.name}
             </p>
           </div>
         </div>
@@ -127,25 +116,6 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
             {busy ? "Signing in…" : "Sign in"}
           </Button>
 
-          {redirectProviders.length > 0 && (
-            <div className="mt-6 border-t border-outline-variant pt-4">
-              <p className={labelClass}>Or continue with</p>
-              <div className="mt-2 flex flex-col gap-2">
-                {redirectProviders.map((provider) => (
-                  <Button
-                    key={provider.id}
-                    variant="secondary"
-                    onClick={() => {
-                      window.location.href =
-                        provider.authorizationUrl?.(window.location.href) ?? "#";
-                    }}
-                  >
-                    {provider.name}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
         </form>
 
         <p className="mt-4 text-center text-body-sm text-on-surface-variant">

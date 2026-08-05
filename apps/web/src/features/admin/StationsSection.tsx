@@ -57,9 +57,15 @@ export function StationsSection({
               size="sm"
               icon={<Plus className="size-4" />}
               onClick={() => {
-                const id = StationId(`st-new-${Date.now()}`);
-                const result = store.addStation(newStation(id));
-                if (result.ok) setSelectedId(id);
+                const before = new Set(store.config.stations.map((s) => s.id));
+                void (async () => {
+                  // Identifiers are the server's; the new station is the one
+                  // that was not in the configuration a moment ago.
+                  const result = await store.addStation(newStationPatch());
+                  if (!result.ok) return;
+                  const created = store.config.stations.find((s) => !before.has(s.id));
+                  if (created) setSelectedId(created.id);
+                })();
               }}
             >
               Add station
@@ -112,9 +118,14 @@ export function StationsSection({
   );
 }
 
-function newStation(id: StationId): StationConfig {
+/**
+ * The fields a new station starts with.
+ *
+ * No identifier: the server mints it, so a client cannot collide with an
+ * existing row or resurrect a deleted one and inherit its history.
+ */
+function newStationPatch(): Record<string, unknown> {
   return {
-    id,
     name: "New Station",
     code: "NEW",
     room: null,

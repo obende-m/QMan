@@ -39,19 +39,24 @@ export function DisplayBoardsSection({
               size="sm"
               icon={<Plus className="size-4" />}
               onClick={() => {
-                const id = `board-${Date.now()}`;
                 const first = store.publicStations()[0];
                 if (!first) return;
-                const result = store.addBoard({
-                  id,
-                  name: "New Board",
-                  stationIds: [first.id],
-                  waitingToShow: 4,
-                  namePolicy: store.config.defaults.namePolicy,
-                  showEstimatedWait: true,
-                  showRoom: true,
-                });
-                if (result.ok) setSelectedId(id);
+                // The server mints the identifier, so the new board is the one
+                // that was not there before rather than one chosen here.
+                const before = new Set(store.config.displayBoards.map((b) => b.id));
+                void (async () => {
+                  const result = await store.addBoard({
+                    name: "New Board",
+                    stationIds: [first.id],
+                    waitingToShow: 4,
+                    namePolicy: store.config.defaults.namePolicy,
+                    showEstimatedWait: true,
+                    showRoom: true,
+                  });
+                  if (!result.ok) return;
+                  const created = store.config.displayBoards.find((b) => !before.has(b.id));
+                  if (created) setSelectedId(created.id);
+                })();
               }}
             >
               Add board
