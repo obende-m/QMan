@@ -15,6 +15,7 @@ import type { ConfigStore } from "../../data/config-store.js";
 import type { OperationsStore } from "../../data/operations-store.js";
 import { inputClass, labelClass } from "../../data/useConfig.js";
 import { Field, Toggle } from "./StationsSection.js";
+import { DraftInput } from "./shared.js";
 
 const EVENT_LABELS: Record<AnnouncementEvent, string> = {
   called: "Patient called",
