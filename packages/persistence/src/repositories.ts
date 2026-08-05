@@ -51,8 +51,14 @@ export interface VisitRepository {
   openAtStation(stationId: StationId): Promise<Visit[]>;
   /** Active visits for a branch, for dashboards and the reception list. */
   activeInBranch(branchId: BranchId): Promise<Visit[]>;
+  /** Resolves the token printed into a ticket's QR code. Open visits only. */
+  findByTrackingToken(tokenHash: string): Promise<Visit | null>;
   /** Persists the visit and its queue entries, and appends its events. */
-  save(visit: Visit, events: readonly NewEvent[]): Promise<void>;
+  save(
+    visit: Visit,
+    events: readonly NewEvent[],
+    options?: { trackingTokenHash?: string },
+  ): Promise<void>;
   isJourneyCodeTaken(branchId: BranchId, code: JourneyCode): Promise<boolean>;
 }
 
@@ -193,14 +199,38 @@ export class PostgresVisitRepository implements VisitRepository {
    * patient in a queue nobody can look up; an event without its state change is
    * a lie in the audit trail.
    */
-  async save(visit: Visit, events: readonly NewEvent[]): Promise<void> {
+  /**
+   * Looks up a visit by the hash of its tracking token.
+   *
+   * Open visits only. A token for a closed visit resolving would leave a
+   * working link on a ticket in someone's pocket long after the visit ended.
+   */
+  async findByTrackingToken(tokenHash: string): Promise<Visit | null> {
+    const [row] = await this.db.query<VisitRow>(
+      `SELECT ${VISIT_COLUMNS} FROM visits
+       WHERE tracking_token_hash = $1 AND closed_at IS NULL`,
+      [tokenHash],
+    );
+    if (!row) return null;
+    return this.#hydrate([row]).then((visits) => visits[0] ?? null);
+  }
+
+  async save(
+    visit: Visit,
+    events: readonly NewEvent[],
+    options: { trackingTokenHash?: string } = {},
+  ): Promise<void> {
     const { visit: row, entries } = fromVisit(visit);
 
     await this.db.transaction(async (tx) => {
       await tx.query(
-        `INSERT INTO visits (${VISIT_COLUMNS})
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        `INSERT INTO visits (${VISIT_COLUMNS}, tracking_token_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          ON CONFLICT (id) DO UPDATE SET
+           -- COALESCE, so a later save that carries no token does not clear
+           -- the one issued at admission and printed on the patient's ticket.
+           tracking_token_hash =
+             COALESCE(EXCLUDED.tracking_token_hash, visits.tracking_token_hash),
            status = EXCLUDED.status,
            priority = EXCLUDED.priority,
            current_queue_entry_id = EXCLUDED.current_queue_entry_id,
@@ -223,6 +253,7 @@ export class PostgresVisitRepository implements VisitRepository {
           row.created_at,
           row.completed_at,
           row.closed_at,
+          options.trackingTokenHash ?? null,
         ],
       );
 

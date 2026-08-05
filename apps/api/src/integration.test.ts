@@ -89,6 +89,7 @@ suite("persistence against real PostgreSQL", () => {
         "002_session_tokens",
         "003_login_throttle",
         "004_idempotency",
+        "005_tracking_tokens",
       ]);
     }, 120_000);
 
@@ -132,7 +133,7 @@ suite("persistence against real PostgreSQL", () => {
     it("applies nothing on a second run", async () => {
       const outcome = await migrate(db, loadMigrations());
       expect(outcome.applied).toEqual([]);
-      expect(outcome.skipped).toHaveLength(4);
+      expect(outcome.skipped).toHaveLength(5);
     }, 60_000);
 
     it("refuses to run when an applied migration has been edited", async () => {

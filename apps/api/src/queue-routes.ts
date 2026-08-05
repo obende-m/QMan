@@ -159,15 +159,15 @@ async function act(
   // Published only after the write has landed. A subscriber that acted on an
   // event for a change still in flight would be reacting to something that
   // might yet roll back.
+  // The stream is handed the record, never a rendered payload: it renders one
+  // per audience, so a board cannot receive the staff projection.
   for (const record of records) {
-    deps.stream.publish(
-      describeEvent({
-        ...record,
-        id: `${visit.id}-${record.occurredAt.getTime()}-${record.type}`,
-        sequence: 0,
-        recordedAt: record.occurredAt,
-      }),
-    );
+    deps.stream.publish({
+      ...record,
+      id: `${visit.id}-${record.occurredAt.getTime()}-${record.type}`,
+      sequence: 0,
+      recordedAt: record.occurredAt,
+    });
   }
 
   await respond(200, { visit: describeVisit(visit) });

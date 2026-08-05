@@ -7,21 +7,36 @@
  * one ordinary GET. A hospital's network equipment has opinions about upgrade
  * handshakes and none at all about a long-lived response.
  *
- * Three properties matter for the surfaces that consume this.
+ * **Audience is part of the subscription, not of the payload.**
  *
- * **Events carry the branch they belong to**, and a subscriber receives only
- * its own. A display board in the laboratory showing consultation tickets is
- * not a cosmetic error; the waiting room acts on it.
+ * The display board and the staff workstation are separate trust domains. A
+ * board hangs unattended in a waiting room where anyone can read it and, given
+ * a browser, anyone can open its endpoint directly. It must therefore receive
+ * only what is already visible in that room: a ticket, a station, a status, a
+ * time.
  *
- * **A heartbeat is sent even when nothing happens.** The connection model built
- * for the display board distinguishes "connected and quiet" from "connected in
- * name only", and it can only do that if silence is itself informative. Without
- * a heartbeat, an hour with no patients and a severed cable look identical.
+ * That could have been done by filtering at each call site, which is the design
+ * where one forgotten field becomes a disclosure. Instead the fan-out itself
+ * renders a different payload per audience, and a public subscriber has no path
+ * to the staff projection at all. Adding a field to the staff view cannot leak
+ * it to a board, because the board's payload is built from a separate function
+ * that never sees the record's summary or correlation id.
  *
- * **Every event carries an id**, so a client reconnecting sends
- * `Last-Event-ID` and the server can tell whether the gap is one it can fill.
+ * Two properties carry over from before. A subscriber receives only its own
+ * branch's events, because a laboratory board showing consultation tickets is
+ * something the waiting room acts on. And a heartbeat is sent even when nothing
+ * happens, so that silence is informative rather than ambiguous.
  */
 import type { EventRecord } from "@qman/domain";
+
+/**
+ * Who is listening, and therefore what they may be told.
+ *
+ * `staff` is an authenticated workstation. `public` is a display board: no
+ * session, no identity, and no expectation of privacy for anyone who can see
+ * the screen.
+ */
+export type Audience = "staff" | "public";
 
 /**
  * How often a comment is sent on an idle connection.
@@ -35,6 +50,7 @@ export const HEARTBEAT_MILLIS = 20_000;
 
 export interface StreamSubscriber {
   readonly branchId: string | null;
+  readonly audience: Audience;
   send(chunk: string): void;
 }
 
@@ -63,6 +79,70 @@ export function formatHeartbeat(at: Date): string {
 }
 
 /**
+ * What a staff workstation is told.
+ *
+ * Still no patient name — the wire never carries one, whatever the audience,
+ * because the privacy policy decides what a *screen* renders and the transport
+ * should not be the thing that makes a violation possible. The Journey Code is
+ * here because a workstation legitimately needs to correlate a patient's
+ * progress across stations, and staff are authenticated and accountable.
+ */
+export function describeEvent(record: EventRecord): PublishedEvent {
+  return {
+    id: record.id,
+    type: record.type,
+    branchId: record.branchId,
+    payload: {
+      id: record.id,
+      type: record.type,
+      at: record.occurredAt.toISOString(),
+      branchId: record.branchId,
+      visitId: record.visitId,
+      correlationId: record.correlationId,
+      stationId: (record.payload["stationId"] as string | undefined) ?? null,
+      queueLabel: (record.payload["queueLabel"] as string | undefined) ?? null,
+      summary: record.summary,
+    },
+  };
+}
+
+/**
+ * What a display board is told.
+ *
+ * Built from scratch rather than by removing fields from the staff projection,
+ * so a field added there cannot arrive here by omission. Three exclusions are
+ * deliberate and worth naming:
+ *
+ * **No Journey Code.** It is printed on the patient's ticket and is the key to
+ * their tracking page. A board that displayed or transmitted it would turn a
+ * photograph of a waiting-room screen into a set of other people's lookup keys.
+ * It reaches the wire as `correlationId` and inside `summary`, which is why
+ * neither is copied here.
+ *
+ * **No visit id.** An internal identifier is not information a waiting room
+ * needs, and it correlates a person across stations for anyone collecting them.
+ *
+ * **No summary.** It is prose containing the Journey Code.
+ */
+export function describeBoardEvent(record: EventRecord): PublishedEvent {
+  return {
+    id: record.id,
+    type: record.type,
+    branchId: record.branchId,
+    payload: {
+      id: record.id,
+      type: record.type,
+      at: record.occurredAt.toISOString(),
+      branchId: record.branchId,
+      stationId: (record.payload["stationId"] as string | undefined) ?? null,
+      // The ticket, which is called aloud and printed on paper anyway.
+      queueLabel: (record.payload["queueLabel"] as string | undefined) ?? null,
+      status: (record.payload["status"] as string | undefined) ?? null,
+    },
+  };
+}
+
+/**
  * Fans events out to connected clients.
  *
  * A subscriber that throws while being written to is removed rather than
@@ -83,11 +163,27 @@ export class EventStream {
     return this.#subscribers.size;
   }
 
-  publish(event: PublishedEvent): void {
-    const chunk = formatEvent(event);
+  /**
+   * Takes the record, not a rendered payload.
+   *
+   * The rendering happens per subscriber, which is what makes the audience rule
+   * impossible to bypass: a caller cannot hand this a staff payload and have it
+   * delivered to a board, because callers do not produce payloads at all.
+   */
+  publish(record: EventRecord): void {
+    let staffChunk: string | null = null;
+    let boardChunk: string | null = null;
+
     for (const subscriber of [...this.#subscribers]) {
-      if (subscriber.branchId !== null && subscriber.branchId !== event.branchId) continue;
-      this.#write(subscriber, chunk);
+      if (subscriber.branchId !== null && subscriber.branchId !== record.branchId) continue;
+
+      if (subscriber.audience === "public") {
+        boardChunk ??= formatEvent(describeBoardEvent(record));
+        this.#write(subscriber, boardChunk);
+      } else {
+        staffChunk ??= formatEvent(describeEvent(record));
+        this.#write(subscriber, staffChunk);
+      }
     }
   }
 
@@ -105,37 +201,4 @@ export class EventStream {
       this.#subscribers.delete(subscriber);
     }
   }
-}
-
-/**
- * What a client is told about an event.
- *
- * Patient identity is deliberately absent. The stream feeds display boards and
- * waiting-room screens as well as staff workstations, and a surface that
- * receives a name can render it whatever the privacy policy says. Sending only
- * the ticket, the station and the journey code means the wire itself cannot
- * leak a name — the policy is enforced by what is transmitted rather than by
- * every consumer remembering to check.
- */
-export function describeEvent(record: EventRecord): PublishedEvent {
-  return {
-    id: record.id,
-    type: record.type,
-    branchId: record.branchId,
-    payload: {
-      id: record.id,
-      type: record.type,
-      at: record.occurredAt.toISOString(),
-      branchId: record.branchId,
-      visitId: record.visitId,
-      // The Journey Code for operational events, the session for the rest.
-      // Already on the record, so a client can group without a second query.
-      correlationId: record.correlationId,
-      // Lifted out of the payload because every consumer wants it and none
-      // should have to know the shape of each event type to find it.
-      stationId: (record.payload["stationId"] as string | undefined) ?? null,
-      queueLabel: (record.payload["queueLabel"] as string | undefined) ?? null,
-      summary: record.summary,
-    },
-  };
 }

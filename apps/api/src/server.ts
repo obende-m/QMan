@@ -34,6 +34,7 @@ import { silentLogger, type Logger } from "./logging.js";
 import { applyCors, handlePreflight, securityHeaders } from "./http-security.js";
 import { registerQueueRoutes, type QueueRouteDependencies } from "./queue-routes.js";
 import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
+import { registerPublicRoutes, type PublicRouteDependencies } from "./public-routes.js";
 import { V1 } from "./version.js";
 
 export { SESSION_COOKIE };
@@ -64,6 +65,8 @@ export interface ServerOptions {
   /** Set when the deployment terminates TLS. Controls HSTS only. */
   readonly https?: boolean;
   readonly stream?: EventStream;
+  /** The two unauthenticated surfaces. Registered only when configured. */
+  readonly publicSurfaces?: Omit<PublicRouteDependencies, "logger" | "now">;
   /** Business routes are registered only when their repositories exist. */
   readonly queue?: Omit<QueueRouteDependencies, "guards" | "logger" | "resolveHospital" | "stream">;
 }
@@ -334,6 +337,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
 
       const unsubscribe = stream.subscribe({
         branchId,
+        audience: "staff",
         send: (chunk) => reply.raw.write(chunk),
       });
 
@@ -352,6 +356,10 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return reply;
     },
   );
+
+  if (options.publicSurfaces) {
+    registerPublicRoutes(app, { ...options.publicSurfaces, logger, now });
+  }
 
   if (options.queue) {
     registerQueueRoutes(app, {
