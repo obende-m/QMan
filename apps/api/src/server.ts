@@ -31,6 +31,9 @@ import {
 import { CSRF_COOKIE, issueCsrfToken, verifyCsrf } from "./csrf.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { silentLogger, type Logger } from "./logging.js";
+import { applyCors, handlePreflight, securityHeaders } from "./http-security.js";
+import { registerQueueRoutes, type QueueRouteDependencies } from "./queue-routes.js";
+import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
 
 export { SESSION_COOKIE };
 export { CSRF_COOKIE, CSRF_HEADER } from "./csrf.js";
@@ -57,6 +60,11 @@ export interface ServerOptions {
   readonly allowedOrigins: readonly string[];
   readonly rateLimiter?: RateLimiter;
   readonly now?: () => Date;
+  /** Set when the deployment terminates TLS. Controls HSTS only. */
+  readonly https?: boolean;
+  readonly stream?: EventStream;
+  /** Business routes are registered only when their repositories exist. */
+  readonly queue?: Omit<QueueRouteDependencies, "guards" | "logger" | "resolveHospital" | "stream">;
 }
 
 declare module "fastify" {
@@ -111,6 +119,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const logger = options.logger ?? silentLogger();
   const now = options.now ?? (() => new Date());
   const rateLimiter = options.rateLimiter ?? createRateLimiter();
+  const stream = options.stream ?? new EventStream();
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
 
   const guards: GuardDependencies = {
@@ -130,6 +139,22 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       typeof supplied === "string" && supplied.length > 0 && supplied.length <= 128
         ? supplied
         : randomUUID();
+  });
+
+  /**
+   * Headers are set on every response, including errors and 404s. Attaching
+   * them per-route would leave exactly the responses nobody remembers to test
+   * without them.
+   */
+  const headers = securityHeaders({ https: options.https ?? options.secureCookies });
+  app.addHook("onRequest", async (request, reply) => {
+    for (const [name, value] of Object.entries(headers)) void reply.header(name, value);
+    applyCors(request, reply, options.allowedOrigins);
+
+    // A preflight carries no credentials and must be answered before the CSRF
+    // check, which would refuse it for having no token.
+    if (handlePreflight(request, reply, options.allowedOrigins)) return reply;
+    return undefined;
   });
 
   /**
@@ -276,6 +301,66 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       return reply.status(200).send({ sessions: [] });
     },
   );
+
+  /**
+   * The event stream.
+   *
+   * A subscriber receives only its own branch's events: a display board in the
+   * laboratory showing consultation tickets is not a cosmetic error, because
+   * the waiting room acts on it.
+   *
+   * The heartbeat is what makes silence informative. The connection model the
+   * surfaces use distinguishes "connected and quiet" from "connected in name
+   * only", and without traffic on an idle stream an hour with no patients and a
+   * severed cable are indistinguishable.
+   */
+  app.get(
+    "/api/stream",
+    { preHandler: requireSignedIn(guards) },
+    async (request, reply) => {
+      const branchId = request.authenticated!.session.branchId;
+
+      void reply
+        .header("Content-Type", "text/event-stream")
+        .header("Cache-Control", "no-store")
+        // Nginx buffers proxied responses by default, which holds every event
+        // until the buffer fills — turning a live stream into a batch one.
+        .header("X-Accel-Buffering", "no")
+        .header("Connection", "keep-alive");
+
+      reply.raw.writeHead(200, reply.getHeaders() as Record<string, string>);
+      reply.raw.write(formatHeartbeat(now()));
+
+      const unsubscribe = stream.subscribe({
+        branchId,
+        send: (chunk) => reply.raw.write(chunk),
+      });
+
+      const beat = setInterval(() => {
+        reply.raw.write(formatHeartbeat(now()));
+      }, HEARTBEAT_MILLIS);
+
+      // Both ends matter: the client closing, and the socket dying without one.
+      const stop = (): void => {
+        clearInterval(beat);
+        unsubscribe();
+      };
+      request.raw.on("close", stop);
+      request.raw.on("error", stop);
+
+      return reply;
+    },
+  );
+
+  if (options.queue) {
+    registerQueueRoutes(app, {
+      ...options.queue,
+      guards,
+      logger,
+      stream,
+      resolveHospital: options.resolveHospital,
+    });
+  }
 
   app.get("/api/health", async (_request, reply) => {
     return reply.status(200).send({ status: "ok", at: now().toISOString() });

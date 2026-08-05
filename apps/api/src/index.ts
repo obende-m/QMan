@@ -11,9 +11,12 @@ import { randomUUID } from "node:crypto";
 import {
   migrate,
   PostgresAccountRepository,
+  PostgresEventRepository,
   PostgresLockoutRepository,
   PostgresSessionRepository,
+  PostgresVisitRepository,
 } from "@qman/persistence";
+import { EventStream } from "./stream.js";
 import { AuthService, createDatabaseLockoutStore } from "./auth.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { connect } from "./database.js";
@@ -42,12 +45,19 @@ async function main(): Promise<void> {
     newId: () => randomUUID(),
   });
 
+  const stream = new EventStream();
   const app = buildServer({
     auth,
     logger,
+    stream,
     resolveHospital: () => config.hospitalId,
     secureCookies: config.secureCookies,
     allowedOrigins: config.allowedOrigins,
+    https: config.secureCookies,
+    queue: {
+      visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
+      events: new PostgresEventRepository(db),
+    },
   });
 
   /**

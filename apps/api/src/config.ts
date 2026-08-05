@@ -21,6 +21,7 @@ export interface Config {
   readonly logLevel: LogLevel;
   readonly secureCookies: boolean;
   readonly allowedOrigins: readonly string[];
+  readonly production: boolean;
 }
 
 export class ConfigurationError extends Error {
@@ -31,6 +32,20 @@ export class ConfigurationError extends Error {
 }
 
 const LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
+
+/**
+ * Where Vite serves the three surfaces from, in development only.
+ *
+ * A convenience that exists so a developer does not have to configure CORS
+ * before the application will start. It is never reachable in production, where
+ * the absence of QMAN_ALLOWED_ORIGINS is an error rather than a fallback —
+ * a permissive default is a control that most deployments would not have.
+ */
+const DEVELOPMENT_ORIGINS = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+];
 
 function required(env: NodeJS.ProcessEnv, key: string, hint: string): string {
   const value = env[key];
@@ -80,12 +95,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   /**
-   * Secure cookies default to on, and turning them off has to be deliberate.
-   * A Secure cookie is never sent over plain HTTP, so local development needs
-   * this off — but a production deployment that forgot to set it would then be
-   * issuing session cookies that travel in the clear.
+   * Production is the default posture, and development is the exception that
+   * has to be asked for.
+   *
+   * The other way round — assuming development unless told otherwise — means a
+   * deployment that forgot to set NODE_ENV runs with development's conveniences
+   * enabled, and every one of those conveniences is a weakened control.
    */
-  const secureCookies = boolean(env, "QMAN_SECURE_COOKIES", true);
+  const production = (env["NODE_ENV"] ?? "production").trim() !== "development";
+
+  /**
+   * Secure cookies default to on in production, off in development.
+   *
+   * A Secure cookie is never sent over plain HTTP, so `http://localhost` needs
+   * it off or sign-in silently fails. In production it is not merely a default
+   * but a floor: a deployment that turned it off would issue session cookies
+   * that travel in the clear, and that is a refusal to start rather than a
+   * warning nobody reads.
+   */
+  const secureCookies = boolean(env, "QMAN_SECURE_COOKIES", production);
+  if (production && !secureCookies) {
+    throw new ConfigurationError(
+      "QMAN_SECURE_COOKIES is false in production. Session cookies would be sent over plain HTTP. " +
+        "Set NODE_ENV=development if this is a local machine.",
+    );
+  }
 
   /**
    * Origins allowed to make state-changing requests — where the three QMan
@@ -97,10 +131,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
    * Each entry is parsed, so a trailing slash or a path is rejected here rather
    * than silently never matching an Origin header.
    */
-  const origins = required(
-    env,
-    "QMAN_ALLOWED_ORIGINS",
-    "It is the comma-separated list of origins the web app is served from, for example https://qman.hospital.example.",
+  const configuredOrigins = env["QMAN_ALLOWED_ORIGINS"];
+  const haveOrigins =
+    typeof configuredOrigins === "string" && configuredOrigins.trim() !== "";
+
+  if (production && !haveOrigins) {
+    throw new ConfigurationError(
+      "QMAN_ALLOWED_ORIGINS is not set. It is the comma-separated list of origins the web app is " +
+        "served from, for example https://qman.hospital.example. There is no default in production.",
+    );
+  }
+
+  const origins = (
+    haveOrigins ? configuredOrigins : DEVELOPMENT_ORIGINS.join(",")
   )
     .split(",")
     .map((value) => value.trim())
@@ -125,6 +168,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
   return {
     allowedOrigins,
+    production,
     databaseUrl,
     // Most managed providers require TLS; a server on the hospital's own LAN
     // typically has none configured.

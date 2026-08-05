@@ -29,10 +29,40 @@ describe("configuration", () => {
     );
   });
 
-  /** A deployment that forgot the variable must not be the one without Secure. */
-  it("marks cookies Secure unless told otherwise", () => {
+  /**
+   * Production is the default posture. Assuming development unless told
+   * otherwise would mean a deployment that forgot NODE_ENV runs with every one
+   * of development's conveniences — each of which is a weakened control.
+   */
+  it("treats an unset NODE_ENV as production", () => {
+    expect(loadConfig(MINIMUM).production).toBe(true);
+    expect(loadConfig({ ...MINIMUM, NODE_ENV: "development" }).production).toBe(false);
+  });
+
+  /** In production Secure is not a default but a floor. */
+  it("refuses to run in production without Secure cookies", () => {
     expect(loadConfig(MINIMUM).secureCookies).toBe(true);
-    expect(loadConfig({ ...MINIMUM, QMAN_SECURE_COOKIES: "false" }).secureCookies).toBe(false);
+    expect(() => loadConfig({ ...MINIMUM, QMAN_SECURE_COOKIES: "false" })).toThrow(
+      /would be sent over plain HTTP/,
+    );
+  });
+
+  /** http://localhost never receives a Secure cookie, so sign-in would fail. */
+  it("defaults Secure off in development, where it would break sign-in", () => {
+    const dev = loadConfig({ ...MINIMUM, NODE_ENV: "development" });
+    expect(dev.secureCookies).toBe(false);
+  });
+
+  /**
+   * A developer should not have to configure CORS before the server will
+   * start; a production deployment must not be able to skip it.
+   */
+  it("defaults allowed origins in development only", () => {
+    const { QMAN_ALLOWED_ORIGINS: _omitted, ...without } = MINIMUM;
+    const dev = loadConfig({ ...without, NODE_ENV: "development" });
+    expect(dev.allowedOrigins).toContain("http://localhost:5173");
+
+    expect(() => loadConfig(without)).toThrow(/no default in production/);
   });
 
   it("expects TLS to the database except on localhost", () => {
@@ -53,6 +83,10 @@ describe("configuration", () => {
   it("requires the origins allowed to make state-changing requests", () => {
     const { QMAN_ALLOWED_ORIGINS: _omitted, ...without } = MINIMUM;
     expect(() => loadConfig(without)).toThrow(/QMAN_ALLOWED_ORIGINS/);
+  });
+
+  it("keeps development defaults out of production", () => {
+    expect(loadConfig(MINIMUM).allowedOrigins).toEqual(["https://qman.hospital.example"]);
   });
 
   it("accepts several origins and rejects anything that is not one", () => {
