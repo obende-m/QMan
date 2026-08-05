@@ -1,60 +1,48 @@
+/**
+ * The clinic store.
+ *
+ * Holds the visits the server owns, rebuilt as aggregates so the domain's
+ * projections can be called on them. It decides nothing: every action is a
+ * request, and the visit that comes back replaces the one held. The transition
+ * table lives on the server, and a copy of it here would be a second opinion
+ * that renders a button enabled for an action the API will refuse.
+ *
+ * **Actions replace from the response, not the request.** Each endpoint returns
+ * the visit that resulted, so what is held afterwards is what was committed.
+ * Re-fetching instead would open a window in which another workstation's action
+ * is read as the effect of this one.
+ *
+ * **The stream invalidates rather than patches.** An event says something
+ * changed; the store re-reads the branch. Applying event payloads directly
+ * would mean maintaining a second reducer that has to agree with the aggregate
+ * — and would silently diverge the first time an event was missed, which is
+ * exactly what a reconnection guarantees will happen.
+ */
 import {
-  DEFAULT_PRIORITY_WEIGHTS,
   UserId,
-  assessStation,
   availableDestinations,
-  clinicPulse,
-  estimateWaitMillis,
-  longestWaitingPatient,
-  orderQueue,
   parseJourneyCode,
-  positionOf,
   priorityWeight,
-  rankBottlenecks,
   resolveRoute,
-  staffWorkloads,
+  visitFromWire,
+  DEFAULT_PRIORITY_WEIGHTS,
   type ClinicPulse,
   type LongestWaiting,
-  type Priority,
   type QueueItem,
   type StaffWorkload,
   type StationHealth,
   type StationId,
   type StationWorklist,
-  type VisitEvent,
+  type Visit,
+  type VisitDependencies,
   type VisitId,
 } from "@qman/domain";
-import {
-  allStations,
-  currentWorkflow,
-  issueTicketFor,
-  queueItemsFor,
-  seedVisits,
-  slaFor,
-  stationServiceEstimate,
-  stationStaffing,
-  worklistFor,
-  type DemoVisit,
-} from "./demo-clinic.js";
-import type { EventBus } from "./event-bus.js";
+import { ApiError } from "../api/client.js";
+import type { ConfigStore } from "./config-store.js";
+import type { VisitsApi } from "./visits-api.js";
+import * as projections from "./clinic-projections.js";
 
-/**
- * The clinic store.
- *
- * Every mutation goes through the `Visit` aggregate — the store never assigns a
- * status or edits a queue entry itself. Its job is the three things the
- * aggregate deliberately cannot do: hold the collection of visits, allocate
- * per-station queue numbers, and publish the events each action produced.
- *
- * That makes it the exact seam the backend replaces. When the API lands, the
- * method bodies call it and the event feed arrives over a socket instead of
- * from `pullEvents()` — every component above this file is unchanged, because
- * they already only see domain types.
- */
-
-export type ActionResult =
-  | { ok: true }
-  | { ok: false; message: string };
+export type ActionResult = { ok: true } | { ok: false; message: string };
 
 const OK: ActionResult = { ok: true };
 
@@ -62,24 +50,50 @@ function fail(message: string): ActionResult {
   return { ok: false, message };
 }
 
+/**
+ * What a failed request means to someone standing at a desk.
+ *
+ * The typed failure is translated once, here, rather than in each screen. A
+ * conflict is the interesting one: it means the visit moved on, usually because
+ * a colleague acted first, and the useful instruction is to look again rather
+ * than to try harder.
+ */
+function messageFor(error: unknown): string {
+  if (!(error instanceof ApiError)) return "That action could not be completed.";
+  switch (error.failure) {
+    case "offline":
+      return "Cannot reach the server. Check the connection and try again.";
+    case "unauthenticated":
+      return "Your session has ended. Sign in again.";
+    case "forbidden":
+      return error.permission
+        ? `You do not have permission to do that (${error.permission}).`
+        : "You do not have permission to do that.";
+    case "conflict":
+      return `${error.message} Refresh to see what changed.`;
+    default:
+      return error.requestId ? `${error.message} (reference ${error.requestId})` : error.message;
+  }
+}
+
+export type ClinicStatus = "loading" | "ready" | "failed";
+
 export class ClinicStore {
-  #visits: DemoVisit[] = seedVisits();
-  #events: VisitEvent[] = [];
+  #visits: Visit[] = [];
+  #status: ClinicStatus = "loading";
+  #error: ApiError | null = null;
   #version = 0;
   #heartbeat = 0;
   #listeners = new Set<() => void>();
-  #bus: EventBus | null = null;
+  #branchId: string | null = null;
+  /** Coalesces the reloads a burst of events would otherwise each trigger. */
+  #pendingReload: Promise<void> | null = null;
 
-  /**
-   * Attaches an event bus. Everything downstream of a clinical action —
-   * announcements, notifications, the audit trail, telemetry — subscribes to
-   * the bus rather than being called from here, so the queue engine stays
-   * ignorant of them.
-   */
-  useBus(bus: EventBus): this {
-    this.#bus = bus;
-    return this;
-  }
+  constructor(
+    private readonly api: VisitsApi,
+    private readonly config: ConfigStore,
+    private readonly deps: VisitDependencies,
+  ) {}
 
   // ------------------------------------------------------------ subscription
 
@@ -90,53 +104,101 @@ export class ClinicStore {
 
   /**
    * A monotonic version, not the visit array. `useSyncExternalStore` compares
-   * snapshots by identity, and the aggregates are mutated in place — returning
-   * the array would compare equal after every action and never re-render.
+   * snapshots by identity, and returning the array would compare equal after an
+   * in-place change and never re-render.
    */
   getVersion = (): number => this.#version;
 
   /**
    * Source liveness, distinct from `version`.
    *
-   * `version` changes only when the clinic changes. A quiet half-hour would
-   * therefore look identical to a dead connection, and a board would wrongly
-   * declare itself stale during a lull. `heartbeat` also advances on a
-   * keepalive, so it answers "is the source still there" rather than "has
-   * anything happened".
-   *
-   * Deliberately does not notify subscribers: surfaces that care read it on
-   * their own render tick, and a keepalive that re-rendered the whole
-   * application every fifteen seconds would be a poor trade for a status dot.
+   * `version` changes only when the clinic changes, so a quiet half-hour would
+   * look identical to a dead connection. `heartbeat` also advances on a
+   * keepalive, answering "is the source still there" rather than "has anything
+   * happened". It deliberately does not notify: a keepalive that re-rendered
+   * the application every twenty seconds would be a poor trade for a status
+   * dot.
    */
   get heartbeat(): number {
     return this.#heartbeat;
   }
 
-  /** Called by the transport — today a local timer, later a socket. */
   keepAlive(): void {
     this.#heartbeat += 1;
   }
 
+  get status(): ClinicStatus {
+    return this.#status;
+  }
+
+  get error(): ApiError | null {
+    return this.#error;
+  }
+
+  // ----------------------------------------------------------------- loading
+
+  async load(branchId: string): Promise<void> {
+    this.#branchId = branchId;
+    try {
+      const response = await this.api.listForBranch(branchId);
+      this.#visits = response.visits.map((visit) => visitFromWire(visit.state, this.deps));
+      this.#status = "ready";
+      this.#error = null;
+    } catch (error) {
+      this.#status = "failed";
+      this.#error = error instanceof ApiError ? error : null;
+    }
+    this.#commit();
+  }
+
+  /**
+   * Re-reads the branch after the stream said something changed.
+   *
+   * Concurrent calls share one request. A patient called at three stations in
+   * the same second produces three events, and three overlapping reads would
+   * land in an order nobody controls — the last to arrive winning, whether or
+   * not it was the newest.
+   */
+  async invalidate(): Promise<void> {
+    if (this.#branchId === null) return;
+    this.#heartbeat += 1;
+    if (this.#pendingReload !== null) return this.#pendingReload;
+
+    const branchId = this.#branchId;
+    this.#pendingReload = (async () => {
+      try {
+        const response = await this.api.listForBranch(branchId);
+        this.#visits = response.visits.map((visit) => visitFromWire(visit.state, this.deps));
+        this.#status = "ready";
+        this.#error = null;
+        this.#commit();
+      } catch (error) {
+        // A failed refresh leaves what is on screen alone. It is the last thing
+        // the server said, which is better than an empty clinic — and the
+        // connection indicator already reports that it is no longer fresh.
+        this.#error = error instanceof ApiError ? error : null;
+      } finally {
+        this.#pendingReload = null;
+      }
+    })();
+
+    return this.#pendingReload;
+  }
+
   // ----------------------------------------------------------------- queries
 
-  get visits(): readonly DemoVisit[] {
+  get visits(): readonly Visit[] {
     return this.#visits;
   }
 
-  /** Most recent first. Drives the Live Activity feed. */
-  get events(): readonly VisitEvent[] {
-    return this.#events;
-  }
-
-  find(visitId: VisitId): DemoVisit | undefined {
-    return this.#visits.find(({ visit }) => visit.id === visitId);
+  find(visitId: VisitId): Visit | undefined {
+    return this.#visits.find((visit) => visit.id === visitId);
   }
 
   worklist(stationId: StationId): StationWorklist {
-    return worklistFor(this.#visits, stationId);
+    return projections.worklistFor(this.#visits, stationId);
   }
 
-  /** The station's waiting list, in the exact order it should be served. */
   waitingAt(stationId: StationId): readonly QueueItem[] {
     return this.worklist(stationId).waiting;
   }
@@ -144,269 +206,223 @@ export class ClinicStore {
   /**
    * Visits needing attention regardless of when they arrived.
    *
-   * Sorted by clinical weight then by how long they have been waiting, so the
-   * patient who is both urgent and longest-waiting is always first.
+   * Sorted by clinical weight then by arrival, so the patient who is both
+   * urgent and longest-waiting is always first.
    */
-  priorityVisits(): DemoVisit[] {
+  priorityVisits(): Visit[] {
     return this.#visits
-      .filter(({ visit }) => {
+      .filter((visit) => {
         if (visit.status === "completed" || visit.status === "closed") return false;
         if (visit.status === "cancelled") return false;
         return visit.priority === "emergency" || visit.priority === "high";
       })
       .sort((a, b) => {
         const byPriority =
-          priorityWeight(b.visit.priority, DEFAULT_PRIORITY_WEIGHTS) -
-          priorityWeight(a.visit.priority, DEFAULT_PRIORITY_WEIGHTS);
+          priorityWeight(b.priority, DEFAULT_PRIORITY_WEIGHTS) -
+          priorityWeight(a.priority, DEFAULT_PRIORITY_WEIGHTS);
         if (byPriority !== 0) return byPriority;
-        return a.arrivedAt.getTime() - b.arrivedAt.getTime();
+        return a.createdAt.getTime() - b.createdAt.getTime();
       });
   }
 
   /** Destinations a station may send its current patient to. */
   destinationsFrom(stationId: StationId) {
-    return availableDestinations(currentWorkflow(), stationId);
+    const workflow = this.config.defaultWorkflow();
+    if (workflow === undefined) return [];
+    return availableDestinations(workflow, stationId);
   }
 
-  // ------------------------------------------------------- position & waiting
-
-  /**
-   * A visit's live position in its current station queue, 1-based.
-   *
-   * Deliberately derived on every read rather than stored. The ticket is fixed
-   * for the whole stop; the position moves every time the queue does, and a
-   * stored position would be wrong the instant anyone else was called.
-   * Null when the patient is being served, or is not waiting anywhere.
-   */
   positionOf(visitId: VisitId): number | null {
-    const found = this.find(visitId);
-    const stationId = found?.visit.currentStationId;
-    if (!found || !stationId) return null;
-    return positionOf(visitId, this.worklist(stationId).waiting);
+    return projections.positionOf(this.#visits, visitId);
   }
 
-  /** How many patients are ahead of this visit right now. */
   aheadOf(visitId: VisitId): number | null {
     const position = this.positionOf(visitId);
     return position === null ? null : position - 1;
   }
 
-  /**
-   * Estimated wait for a visit, from its live position and the station's
-   * observed service time today.
-   */
   estimatedWaitMillis(visitId: VisitId): number | null {
-    const found = this.find(visitId);
-    const stationId = found?.visit.currentStationId;
-    const position = this.positionOf(visitId);
-    if (!found || !stationId || position === null) return null;
-
-    return estimateWaitMillis({
-      position,
-      serversAvailable: stationStaffing(stationId),
-      observedServiceMillis: this.worklist(stationId).averageServiceMillis,
-      configuredServiceMillis:
-        stationServiceEstimate(stationId),
-    });
+    return projections.estimatedWaitMillis(this.#visits, this.config.config, visitId);
   }
 
-  /** Estimated wait for whoever joins a station's queue next. */
   estimatedWaitForNewArrival(stationId: StationId): number {
-    const worklist = this.worklist(stationId);
-    return estimateWaitMillis({
-      position: worklist.counts.waiting + 1,
-      serversAvailable: stationStaffing(stationId),
-      observedServiceMillis: worklist.averageServiceMillis,
-      configuredServiceMillis:
-        stationServiceEstimate(stationId),
-    });
+    return projections.estimatedWaitForNewArrival(this.#visits, this.config.config, stationId);
   }
 
   /** Finds a visit by Journey Code, tolerating however a patient typed it. */
-  findByJourneyCode(input: string): DemoVisit | undefined {
+  findByJourneyCode(input: string): Visit | undefined {
     let code: string;
     try {
       code = parseJourneyCode(input);
     } catch {
       return undefined;
     }
-    return this.#visits.find(({ visit }) => visit.journeyCode === code);
+    return this.#visits.find((visit) => visit.journeyCode === code);
   }
 
   // --------------------------------------------------------------- analytics
 
-  /** Worklists for every station the clinic operates. */
   allWorklists(): StationWorklist[] {
-    return allStations().map((stationId) => this.worklist(stationId));
+    return projections.allWorklists(this.#visits, this.config.config);
   }
 
   stationHealth(now: Date): StationHealth[] {
-    return this.allWorklists().map((worklist) =>
-      assessStation(worklist, slaFor(worklist.stationId), now),
-    );
+    return projections.stationHealth(this.#visits, this.config.config, now);
   }
 
   bottlenecks(now: Date): StationHealth[] {
-    return rankBottlenecks(this.stationHealth(now));
+    return projections.bottlenecks(this.#visits, this.config.config, now);
   }
 
   pulse(now: Date): ClinicPulse {
-    return clinicPulse(this.stationHealth(now), this.allWorklists());
+    return projections.pulse(this.#visits, this.config.config, now);
   }
 
   longestWaiting(now: Date): LongestWaiting | null {
-    return longestWaitingPatient(this.allWorklists(), now);
+    return projections.longestWaiting(this.#visits, this.config.config, now);
   }
 
   workloads(): StaffWorkload[] {
-    return staffWorkloads(this.allWorklists());
+    return projections.workloads(this.#visits, this.config.config);
   }
 
   // ----------------------------------------------------------------- actions
 
-  /** Calls the next patient in line. Refuses if the station is mid-service. */
-  callNext(stationId: StationId, userId: UserId): ActionResult {
+  /**
+   * Admits a patient.
+   *
+   * The tracking token comes back once and is handed to the caller for the QR
+   * code. It is never stored here: the store keeps clinic state, and a
+   * credential kept in memory alongside it is a credential that reaches
+   * anything holding a reference to the store.
+   */
+  async admit(patient: {
+    patientName: string;
+    hospitalNumber?: string;
+    phone?: string;
+    priority?: string;
+  }): Promise<ActionResult & { trackingToken?: string; visit?: Visit }> {
+    try {
+      const response = await this.api.admit(patient, this.#key());
+      const visit = visitFromWire(response.visit.state, this.deps);
+      this.#replace(visit);
+      return { ok: true, trackingToken: response.trackingToken, visit };
+    } catch (error) {
+      return fail(messageFor(error));
+    }
+  }
+
+  /**
+   * Calls the next patient in line.
+   *
+   * The station's queue order is the domain's, computed from what the server
+   * returned, so the browser chooses *which* patient. Whether that patient may
+   * be called is still the aggregate's decision, made server-side.
+   */
+  async callNext(stationId: StationId, _userId: UserId): Promise<ActionResult> {
     const worklist = this.worklist(stationId);
     if (worklist.current) {
       return fail(
         `${worklist.current.patientName} is still at this station. Complete or route them first.`,
       );
     }
-
-    const [next] = orderQueue(worklist.waiting);
-    if (!next) return fail("No patients are waiting at this station.");
-
-    return this.#act(next.visitId, (visit) => {
-      visit.call(userId);
-      return OK;
-    });
+    const next = worklist.waiting[0];
+    if (next === undefined) return fail("Nobody is waiting at this station.");
+    return this.#act((key) => this.api.call(next.visitId, key));
   }
 
-  recall(visitId: VisitId, userId: UserId): ActionResult {
-    return this.#act(visitId, (visit) => {
-      visit.call(userId);
-      return OK;
-    });
+  recall(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.recall(visitId, key));
   }
 
-  startService(visitId: VisitId, userId: UserId): ActionResult {
-    return this.#act(visitId, (visit) => {
-      visit.startService(userId);
-      return OK;
-    });
+  startService(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.start(visitId, key));
   }
 
-  skip(visitId: VisitId, reason: string | null, userId: UserId): ActionResult {
-    return this.#act(visitId, (visit) => {
-      visit.skip({ actorId: userId, reason });
-      return OK;
-    });
+  skip(visitId: VisitId, _reason: string | null, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.skip(visitId, key));
+  }
+
+  complete(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.complete(visitId, key));
+  }
+
+  cancel(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.cancel(visitId, key));
   }
 
   /**
-   * Routes onward. With no destination the workflow decides, which is the
-   * one-click path the vast majority of visits take.
-   */
-  route(
-    visitId: VisitId,
-    toStationId: StationId | undefined,
-    userId: UserId,
-  ): ActionResult {
-    return this.#act(visitId, (visit) => {
-      const decision = resolveRoute({
-        workflow: currentWorkflow(),
-        visit,
-        requestedStationId: toStationId,
-      });
-
-      if (decision.kind === "complete") {
-        visit.complete({ actorId: userId });
-        return OK;
-      }
-
-      // The destination station issues the ticket, in its own format and from
-      // its own series. The Journey Code travels with the visit unchanged.
-      visit.routeTo(
-        decision.toStationId,
-        issueTicketFor(decision.toStationId, visit.journeyCode),
-        { actorId: userId, followedWorkflow: decision.followedWorkflow },
-      );
-      return OK;
-    });
-  }
-
-  complete(visitId: VisitId, userId: UserId): ActionResult {
-    return this.#act(visitId, (visit) => {
-      visit.complete({ actorId: userId });
-      return OK;
-    });
-  }
-
-  /** Raises clinical priority. The queue reorders on the next render. */
-  escalate(
-    visitId: VisitId,
-    to: Priority,
-    reason: string | null,
-    userId: UserId,
-  ): ActionResult {
-    return this.#act(visitId, (visit) => {
-      visit.changePriority(to, { actorId: userId, reason });
-      return OK;
-    });
-  }
-
-  // ----------------------------------------------------------------- private
-
-  /**
-   * Applies a domain action and commits its events.
+   * Routes a visit onward.
    *
-   * The aggregate throws a typed `DomainError` when an action is illegal from
-   * the current state. Catching it here turns "the engine says no" into a
-   * message the station can read, rather than a crashed screen — the same
-   * mapping the API layer will do to HTTP status codes.
+   * Whether the destination is on the workflow is decided by the domain's
+   * `resolveRoute` and *declared* to the server, which refuses an off-workflow
+   * route without the permission for it. The browser is stating an intention,
+   * not granting itself one.
    */
-  #act(
+  async route(
     visitId: VisitId,
-    apply: (visit: DemoVisit["visit"]) => ActionResult,
-  ): ActionResult {
-    const found = this.find(visitId);
-    if (!found) return fail("That visit is no longer on this board.");
+    toStationId: StationId,
+    _userId: UserId,
+  ): Promise<ActionResult> {
+    const visit = this.find(visitId);
+    const workflow = this.config.defaultWorkflow();
+    if (visit === undefined) return fail("That visit is no longer open.");
+    if (workflow === undefined) return fail("This hospital has no workflow configured.");
 
+    let decision;
     try {
-      const result = apply(found.visit);
-      this.#commit(found);
-      return result;
+      decision = resolveRoute({ workflow, visit, requestedStationId: toStationId });
     } catch (error) {
-      // Any events recorded before the throw are discarded along with it: the
-      // aggregate rejected the action, so nothing happened worth publishing.
-      found.visit.pullEvents();
+      // The domain refuses a route from a visit that is not at a station, and
+      // a route to the station it is already at. Both are the same answer a
+      // server-side attempt would give; asking first saves a round trip.
       return fail(
-        error instanceof Error ? error.message : "That action is not allowed.",
+        error instanceof Error ? error.message : "That visit cannot be routed there.",
       );
+    }
+
+    if (decision.kind === "complete") {
+      return fail("That visit has reached the end of its workflow.");
+    }
+
+    return this.#act((key) =>
+      this.api.route(visitId, decision.toStationId, decision.followedWorkflow, key),
+    );
+  }
+
+  async #act(send: (key: string) => Promise<{ visit: { state: unknown } }>): Promise<ActionResult> {
+    try {
+      const response = await send(this.#key());
+      this.#replace(
+        visitFromWire(response.visit.state as Parameters<typeof visitFromWire>[0], this.deps),
+      );
+      return OK;
+    } catch (error) {
+      return fail(messageFor(error));
     }
   }
 
-  #commit(entry: DemoVisit): void {
-    const events = entry.visit.pullEvents();
-    if (events.length > 0) {
-      this.#events = [...events.reverse(), ...this.#events].slice(0, 100);
-    }
+  /**
+   * One key per logical action.
+   *
+   * Generated here rather than by the transport, so a caller that retries the
+   * same action reuses it and the server recognises the second attempt as the
+   * same intent rather than a new one.
+   */
+  #key(): string {
+    return this.deps.ids.next();
+  }
+
+  #replace(visit: Visit): void {
+    const index = this.#visits.findIndex((candidate) => candidate.id === visit.id);
+    if (index === -1) this.#visits = [visit, ...this.#visits];
+    else this.#visits = this.#visits.map((current, at) => (at === index ? visit : current));
+    this.#commit();
+  }
+
+  #commit(): void {
     this.#version += 1;
     this.#heartbeat += 1;
     for (const listener of this.#listeners) listener();
-
-    // Published after listeners, and after the state change is committed, so no
-    // subscriber can observe an event for a change that has not landed.
-    if (events.length > 0) {
-      this.#bus?.publish([...events].reverse());
-    }
   }
 }
-
-/**
- * One store for the running app. Tests construct their own so they never share
- * mutable clinic state between cases.
- */
-export const clinicStore = new ClinicStore();
-
-export const CURRENT_USER = UserId("user-doctor");
