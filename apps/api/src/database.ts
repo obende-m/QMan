@@ -26,7 +26,20 @@ export function connect(config: Config, logger: Logger): DatabaseHandle {
     // cheaper than discovering a dead socket mid-request.
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
-    ...(config.databaseSsl ? { ssl: { rejectUnauthorized: false } } : {}),
+    /**
+     * Certificates are verified by default.
+     *
+     * `rejectUnauthorized: false` is the line most commonly copied into
+     * production from a getting-started guide, and it turns TLS into
+     * encryption without authentication: the connection is unreadable to a
+     * passive observer and completely open to anyone able to answer in the
+     * database's place. Every managed provider presents a certificate that
+     * verifies, so this costs nothing there. A hospital running its own server
+     * with a self-signed certificate is the one case that needs the opt-out.
+     */
+    ...(config.databaseSsl
+      ? { ssl: { rejectUnauthorized: !config.databaseSslInsecure } }
+      : {}),
   });
 
   // A pool error is emitted on idle connections, away from any request. Without

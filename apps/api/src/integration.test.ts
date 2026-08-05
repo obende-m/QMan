@@ -58,7 +58,7 @@ suite("persistence against real PostgreSQL", () => {
     // pins search_path and cannot be used before the schema exists.
     const bootstrap = new pg.Pool({
       connectionString: url,
-      ssl: url!.includes("localhost") ? undefined : { rejectUnauthorized: false },
+      ssl: url!.includes("localhost") ? undefined : { rejectUnauthorized: true },
     });
     await bootstrap.query(`CREATE SCHEMA "${SCHEMA}"`);
     await bootstrap.end();
@@ -69,7 +69,7 @@ suite("persistence against real PostgreSQL", () => {
       // Applied to every connection the pool opens, so migrations and
       // repositories agree on where the tables are.
       options: `-c search_path=${SCHEMA}`,
-      ssl: url!.includes("localhost") ? undefined : { rejectUnauthorized: false },
+      ssl: url!.includes("localhost") ? undefined : { rejectUnauthorized: true },
     });
     db = createPostgresDatabase(pool);
   }, 60_000);
@@ -402,14 +402,26 @@ suite("persistence against real PostgreSQL", () => {
       expect(await allocator.next(STATION as never, "2026-03-09")).toBe(51);
     });
 
-    /** Recovery must never wind a series backwards. */
-    it("advances a series but never reverses it", async () => {
+    /**
+     * `advanceTo` takes the next ordinal that is safe to issue, not the highest
+     * one already issued — so a caller cannot set a counter to a number still
+     * in a patient's hand. After advancing to 500, the next ticket *is* 500.
+     */
+    it("advances a series so the next ticket is the one asked for", async () => {
       const allocator = new PostgresTicketAllocator(db);
       await allocator.advanceTo(STATION as never, "2026-03-10", 500);
-      expect(await allocator.next(STATION as never, "2026-03-10")).toBe(501);
+      expect(await allocator.next(STATION as never, "2026-03-10")).toBe(500);
+    });
 
+    /**
+     * Recovery run twice, or with a stale figure, must never wind a series
+     * backwards — reissuing a ticket someone is already holding is the failure
+     * the whole recovery path exists to prevent.
+     */
+    it("ignores an attempt to wind a series backwards", async () => {
+      const allocator = new PostgresTicketAllocator(db);
       await allocator.advanceTo(STATION as never, "2026-03-10", 10);
-      expect(await allocator.next(STATION as never, "2026-03-10")).toBe(502);
+      expect(await allocator.next(STATION as never, "2026-03-10")).toBe(501);
     });
   });
 

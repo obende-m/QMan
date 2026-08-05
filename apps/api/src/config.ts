@@ -14,6 +14,8 @@ import type { LogLevel } from "./logging.js";
 export interface Config {
   readonly databaseUrl: string;
   readonly databaseSsl: boolean;
+  /** Accepts an unverifiable certificate. For self-signed servers only. */
+  readonly databaseSslInsecure: boolean;
   readonly poolSize: number;
   readonly host: string;
   readonly port: number;
@@ -173,6 +175,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Most managed providers require TLS; a server on the hospital's own LAN
     // typically has none configured.
     databaseSsl: boolean(env, "DATABASE_SSL", !databaseUrl.includes("localhost")),
+    databaseSslInsecure: boolean(env, "DATABASE_SSL_INSECURE", false),
     poolSize: integer(env, "DATABASE_POOL_SIZE", 10),
     host: (env["HOST"] ?? "0.0.0.0").trim(),
     port: integer(env, "PORT", 3001),
