@@ -17,6 +17,7 @@
  */
 import type {
   DisplayBoardConfig,
+  RoleConfig,
   HospitalProfile,
   PatientNamePolicy,
   StationConfig,
@@ -25,7 +26,56 @@ import type {
 } from "@qman/domain";
 import type { SqlExecutor } from "./sql.js";
 
+/**
+ * What still points at a configuration entity.
+ *
+ * Three foreign keys in the schema are `ON DELETE RESTRICT`: a queue entry to
+ * its station, a visit to its workflow, a user to their role. Letting a delete
+ * hit them would work — the database refuses and nothing is lost — but the
+ * caller receives a constraint violation, which reaches an administrator as a
+ * 500 and tells them nothing about what to do.
+ *
+ * So the references are counted first, and the refusal explains itself: this
+ * station is in two workflows and has served forty patients, disable it
+ * instead. That is the answer they needed, and it is only available before the
+ * delete is attempted.
+ */
+export interface EntityUsage {
+  /** Both forms, because English pluralisation rules produce "entrys". */
+  readonly singular: string;
+  readonly plural: string;
+  readonly count: number;
+}
+
 export interface ConfigurationWriter {
+  stationUsage(tx: SqlExecutor, stationId: string): Promise<EntityUsage[]>;
+  workflowUsage(tx: SqlExecutor, workflowId: string): Promise<EntityUsage[]>;
+  roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]>;
+
+  createStation(
+    tx: SqlExecutor,
+    branchId: string,
+    station: StationConfig,
+    at: Date,
+  ): Promise<void>;
+  createWorkflow(tx: SqlExecutor, branchId: string, workflow: Workflow, at: Date): Promise<void>;
+  createBoard(tx: SqlExecutor, branchId: string, board: DisplayBoardConfig, at: Date): Promise<void>;
+  createTicketTemplate(
+    tx: SqlExecutor,
+    hospitalId: string,
+    template: TicketTemplate,
+    at: Date,
+  ): Promise<void>;
+
+  deleteStation(tx: SqlExecutor, stationId: string): Promise<void>;
+  deleteWorkflow(tx: SqlExecutor, workflowId: string): Promise<void>;
+  deleteBoard(tx: SqlExecutor, boardId: string): Promise<void>;
+  deleteTicketTemplate(tx: SqlExecutor, hospitalId: string, templateId: string): Promise<void>;
+
+  createRole(tx: SqlExecutor, hospitalId: string, role: RoleConfig, at: Date): Promise<void>;
+  updateRole(tx: SqlExecutor, hospitalId: string, role: RoleConfig, at: Date): Promise<void>;
+  deleteRole(tx: SqlExecutor, hospitalId: string, roleId: string): Promise<void>;
+
   updateStation(tx: SqlExecutor, station: StationConfig, at: Date): Promise<void>;
   updateWorkflow(tx: SqlExecutor, workflow: Workflow, at: Date): Promise<void>;
   updateBoard(tx: SqlExecutor, board: DisplayBoardConfig, at: Date): Promise<void>;
@@ -44,7 +94,223 @@ export interface ConfigurationWriter {
   ): Promise<void>;
 }
 
+/** Counts that are zero are dropped, so a caller can report only what blocks. */
+function blocking(counts: ReadonlyArray<EntityUsage>): EntityUsage[] {
+  return counts.filter((usage) => usage.count > 0);
+}
+
 export class PostgresConfigurationWriter implements ConfigurationWriter {
+  async stationUsage(tx: SqlExecutor, stationId: string): Promise<EntityUsage[]> {
+    const [row] = await tx.query<{ stages: string; entries: string; boards: string }>(
+      `SELECT
+         (SELECT count(*) FROM workflow_stages WHERE station_id = $1)::text AS stages,
+         (SELECT count(*) FROM queue_entries  WHERE station_id = $1)::text AS entries,
+         (SELECT count(*) FROM display_boards WHERE $1 = ANY(station_ids))::text AS boards`,
+      [stationId],
+    );
+    return blocking([
+      { singular: "workflow stage", plural: "workflow stages", count: Number(row?.stages ?? 0) },
+      { singular: "queue entry", plural: "queue entries", count: Number(row?.entries ?? 0) },
+      { singular: "display board", plural: "display boards", count: Number(row?.boards ?? 0) },
+    ]);
+  }
+
+  async workflowUsage(tx: SqlExecutor, workflowId: string): Promise<EntityUsage[]> {
+    const [row] = await tx.query<{ visits: string }>(
+      `SELECT (SELECT count(*) FROM visits WHERE workflow_id = $1)::text AS visits`,
+      [workflowId],
+    );
+    return blocking([
+      { singular: "visit", plural: "visits", count: Number(row?.visits ?? 0) },
+    ]);
+  }
+
+  async roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]> {
+    const [row] = await tx.query<{ users: string }>(
+      `SELECT (SELECT count(*) FROM users WHERE role_id = $1)::text AS users`,
+      [roleId],
+    );
+    return blocking([
+      { singular: "user", plural: "users", count: Number(row?.users ?? 0) },
+    ]);
+  }
+
+  async createStation(
+    tx: SqlExecutor,
+    branchId: string,
+    station: StationConfig,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO stations
+         (id, branch_id, name, code, room, staffing, service_estimate_ms,
+          sla_target_wait_ms, sla_saturation_point, queue_template, queue_reset,
+          queue_manual_epoch, is_public, enabled, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)`,
+      [
+        station.id,
+        branchId,
+        station.name,
+        station.code,
+        station.room,
+        station.staffing,
+        station.serviceEstimateMillis,
+        station.sla.targetWaitMillis,
+        station.sla.saturationPoint,
+        station.queueNumber.template,
+        station.queueNumber.reset,
+        station.queueNumber.manualEpoch ?? null,
+        station.isPublic,
+        station.enabled,
+        at,
+      ],
+    );
+  }
+
+  async createWorkflow(
+    tx: SqlExecutor,
+    branchId: string,
+    workflow: Workflow,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO workflows (id, branch_id, name, is_default, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $5)`,
+      [workflow.id, branchId, workflow.name, workflow.isDefault, at],
+    );
+    // Stages are written by the same routine the update path uses, so a
+    // workflow created with stages and one edited into that shape land
+    // identically.
+    await this.#writeStages(tx, workflow);
+  }
+
+  async createBoard(
+    tx: SqlExecutor,
+    branchId: string,
+    board: DisplayBoardConfig,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO display_boards
+         (id, branch_id, name, station_ids, waiting_to_show, name_policy,
+          show_estimated_wait, show_room, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)`,
+      [
+        board.id,
+        branchId,
+        board.name,
+        [...board.stationIds],
+        board.waitingToShow,
+        board.namePolicy,
+        board.showEstimatedWait,
+        board.showRoom,
+        at,
+      ],
+    );
+  }
+
+  async createTicketTemplate(
+    tx: SqlExecutor,
+    hospitalId: string,
+    template: TicketTemplate,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO ticket_templates
+         (id, hospital_id, name, paper, elements, instructions, footer,
+          name_policy, tracking_url, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10)`,
+      [
+        template.id,
+        hospitalId,
+        template.name,
+        template.paper,
+        JSON.stringify(template.elements),
+        template.instructions,
+        template.footer,
+        template.namePolicy,
+        template.trackingUrl,
+        at,
+      ],
+    );
+  }
+
+  async deleteStation(tx: SqlExecutor, stationId: string): Promise<void> {
+    await tx.query(`DELETE FROM stations WHERE id = $1`, [stationId]);
+  }
+
+  async deleteWorkflow(tx: SqlExecutor, workflowId: string): Promise<void> {
+    // Stages cascade with the workflow, which is correct: a stage has no
+    // meaning apart from the workflow it belongs to.
+    await tx.query(`DELETE FROM workflows WHERE id = $1`, [workflowId]);
+  }
+
+  async deleteBoard(tx: SqlExecutor, boardId: string): Promise<void> {
+    await tx.query(`DELETE FROM display_boards WHERE id = $1`, [boardId]);
+  }
+
+  async deleteTicketTemplate(
+    tx: SqlExecutor,
+    hospitalId: string,
+    templateId: string,
+  ): Promise<void> {
+    await tx.query(`DELETE FROM ticket_templates WHERE id = $1 AND hospital_id = $2`, [
+      templateId,
+      hospitalId,
+    ]);
+  }
+
+  async createRole(
+    tx: SqlExecutor,
+    hospitalId: string,
+    role: RoleConfig,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `INSERT INTO roles
+         (id, hospital_id, key, name, description, permissions, is_system,
+          created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$8)`,
+      [
+        role.id,
+        hospitalId,
+        role.name.trim().toLowerCase().replace(/\s+/g, "_"),
+        role.name,
+        role.description,
+        [...role.permissions],
+        role.isSystem,
+        at,
+      ],
+    );
+  }
+
+  /**
+   * `is_system` is never written by an update.
+   *
+   * Built-in roles ship with QMan and exist so a hospital cannot delete every
+   * administrative role and lock itself out. A role that could be edited into
+   * or out of being a system role would defeat that.
+   */
+  async updateRole(
+    tx: SqlExecutor,
+    hospitalId: string,
+    role: RoleConfig,
+    at: Date,
+  ): Promise<void> {
+    await tx.query(
+      `UPDATE roles SET name = $3, description = $4, permissions = $5, updated_at = $6
+       WHERE id = $1 AND hospital_id = $2`,
+      [role.id, hospitalId, role.name, role.description, [...role.permissions], at],
+    );
+  }
+
+  async deleteRole(tx: SqlExecutor, hospitalId: string, roleId: string): Promise<void> {
+    await tx.query(`DELETE FROM roles WHERE id = $1 AND hospital_id = $2 AND is_system = false`, [
+      roleId,
+      hospitalId,
+    ]);
+  }
+
   /**
    * Every method takes the transaction rather than holding a connection.
    *
@@ -93,7 +359,10 @@ export class PostgresConfigurationWriter implements ConfigurationWriter {
       [workflow.id, workflow.name, workflow.isDefault, at],
     );
     await tx.query(`DELETE FROM workflow_stages WHERE workflow_id = $1`, [workflow.id]);
+    await this.#writeStages(tx, workflow);
+  }
 
+  async #writeStages(tx: SqlExecutor, workflow: Workflow): Promise<void> {
     for (const stage of workflow.stages) {
       await tx.query(
         `INSERT INTO workflow_stages

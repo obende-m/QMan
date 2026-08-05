@@ -29,10 +29,12 @@
 import {
   hasBlockingProblems,
   validateHospitalConfiguration,
+  validateRoles,
   type AdminEventType,
   type BranchId,
   type ConfigProblem,
   type HospitalConfiguration,
+  type RoleConfig,
   type UserId,
 } from "@qman/domain";
 import {
@@ -69,6 +71,17 @@ export interface ChangeDescription {
 }
 
 export interface ConfigurationChange {
+  /**
+   * Checked before anything is applied, inside the transaction.
+   *
+   * For deletions this is where referential use is counted. The domain cannot
+   * answer it: `validateHospitalConfiguration` sees a configuration, and
+   * whether forty patients have passed through a station is a fact about
+   * operations, not about configuration. Running it inside the transaction is
+   * what stops a queue entry being created against a station between the check
+   * and the delete.
+   */
+  readonly precondition?: (tx: SqlExecutor) => Promise<readonly ConfigProblem[]>;
   /** Produces the configuration that should result. Pure; no rules. */
   readonly apply: (current: HospitalConfiguration) => HospitalConfiguration;
   /** Writes the one entity that moved. */
@@ -129,6 +142,11 @@ export class ConfigurationService {
         };
       }
 
+      const blocked = (await change.precondition?.(tx)) ?? [];
+      if (blocked.length > 0) {
+        return { ok: false, problems: blocked };
+      }
+
       const after = change.apply(before);
       const problems = validateHospitalConfiguration(after);
 
@@ -154,7 +172,64 @@ export class ConfigurationService {
       };
     });
   }
+
+  async applyToRoles(context: ChangeContext, change: RoleChange): Promise<RoleChangeResult> {
+    const { db, now } = this.#deps;
+
+    return db.transaction(async (tx) => {
+      const repository = new PostgresConfigurationRepository(tx);
+      const before = await repository.loadRoles(context.hospitalId);
+
+      const blocked = (await change.precondition?.(tx)) ?? [];
+      if (blocked.length > 0) return { ok: false, problems: blocked };
+
+      const after = change.apply(before);
+      // `validateRoles` reports strings, not paths. They are the message an
+      // administrator needs to read; the path is the role set as a whole.
+      const problems = validateRoles(after).map((message) => ({
+        path: "roles",
+        message,
+        severity: "error" as const,
+      }));
+
+      if (problems.length > 0) return { ok: false, problems };
+
+      const at = now();
+      await change.persist(tx, after, at);
+      await appendEvents(tx, [auditEntry(context, change.describe(before, after), at)]);
+
+      return { ok: true, roles: after };
+    });
+  }
 }
+
+/**
+ * A change to the hospital's roles.
+ *
+ * Roles are not part of `HospitalConfiguration` and are not validated by
+ * `validateHospitalConfiguration`. They have their own rule, `validateRoles`,
+ * and it exists to prevent one specific catastrophe: a hospital editing or
+ * deleting its way to having no role that can manage users, and locking every
+ * administrator out of a running system with no way back in through the
+ * product.
+ *
+ * So the same shape applies — load every role, apply the change, validate the
+ * whole set — for the same reason. "Is this role allowed to lose
+ * admin.users" is a question about the set, not about the role.
+ */
+export interface RoleChange {
+  readonly precondition?: (tx: SqlExecutor) => Promise<readonly ConfigProblem[]>;
+  readonly apply: (current: readonly RoleConfig[]) => RoleConfig[];
+  readonly persist: (tx: SqlExecutor, next: readonly RoleConfig[], at: Date) => Promise<void>;
+  readonly describe: (
+    before: readonly RoleConfig[],
+    after: readonly RoleConfig[],
+  ) => ChangeDescription;
+}
+
+export type RoleChangeResult =
+  | { readonly ok: true; readonly roles: readonly RoleConfig[] }
+  | { readonly ok: false; readonly problems: readonly ConfigProblem[] };
 
 /**
  * Correlated by session, not by Journey Code.

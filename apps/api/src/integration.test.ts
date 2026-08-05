@@ -542,6 +542,201 @@ suite("persistence against real PostgreSQL", () => {
     });
   });
 
+  describe("configuration lifecycle against the database", () => {
+    const writer = new PostgresConfigurationWriter();
+    const CREATED_STATION = "aaaaaaaa-1111-2222-3333-444444444444";
+    const CREATED_WORKFLOW = "bbbbbbbb-1111-2222-3333-444444444444";
+    const CREATED_ROLE = "cccccccc-1111-2222-3333-444444444444";
+
+    it("creates a station and reads it back", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+      await db.transaction((tx) =>
+        writer.createStation(
+          tx,
+          BRANCH,
+          {
+            id: CREATED_STATION,
+            name: "Pharmacy",
+            code: "PHR",
+            room: null,
+            staffing: 1,
+            serviceEstimateMillis: 300_000,
+            sla: { targetWaitMillis: 600_000, saturationPoint: 10 },
+            queueNumber: { template: "P-{n:3}", reset: "daily" },
+            isPublic: true,
+            enabled: true,
+          } as never,
+          new Date(),
+        ),
+      );
+
+      const stations = (await repository.load(HOSPITAL))!.stations;
+      expect(stations.map((s) => s.name)).toContain("Pharmacy");
+    });
+
+    it("creates a workflow with its stages", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+      await db.transaction((tx) =>
+        writer.createWorkflow(
+          tx,
+          BRANCH,
+          {
+            id: CREATED_WORKFLOW,
+            branchId: BRANCH,
+            name: "Pharmacy visit",
+            isDefault: false,
+            stages: [
+              {
+                id: "dddddddd-1111-2222-3333-444444444444",
+                stationId: CREATED_STATION,
+                sequence: 1,
+                isRequired: true,
+                allowSkip: false,
+                allowRepeat: false,
+                branchesTo: [],
+              },
+            ],
+          } as never,
+          new Date(),
+        ),
+      );
+
+      const workflow = (await repository.load(HOSPITAL))!.workflows.find(
+        (w) => w.id === CREATED_WORKFLOW,
+      );
+      expect(workflow?.stages).toHaveLength(1);
+      expect(workflow?.stages[0]!.stationId).toBe(CREATED_STATION);
+    });
+
+    /**
+     * The count that decides whether a delete is offered at all. It has to see
+     * the stage written above.
+     */
+    it("counts what refers to a station", async () => {
+      const usage = await db.transaction((tx) => writer.stationUsage(tx, CREATED_STATION));
+      expect(usage.find((u) => u.singular === "workflow stage")?.count).toBe(1);
+    });
+
+    it("refuses nothing when a station is unused, and deletes it", async () => {
+      const spare = "eeeeeeee-1111-2222-3333-444444444444";
+      await db.transaction((tx) =>
+        writer.createStation(
+          tx,
+          BRANCH,
+          {
+            id: spare,
+            name: "Spare",
+            code: "SPR",
+            room: null,
+            staffing: 1,
+            serviceEstimateMillis: 300_000,
+            sla: { targetWaitMillis: 600_000, saturationPoint: 10 },
+            queueNumber: { template: "S-{n:3}", reset: "daily" },
+            isPublic: false,
+            enabled: true,
+          } as never,
+          new Date(),
+        ),
+      );
+
+      expect(await db.transaction((tx) => writer.stationUsage(tx, spare))).toEqual([]);
+      await db.transaction((tx) => writer.deleteStation(tx, spare));
+
+      const stations = (await new PostgresConfigurationRepository(db).load(HOSPITAL))!.stations;
+      expect(stations.map((s) => s.id)).not.toContain(spare);
+    });
+
+    /**
+     * Deleting a workflow takes its stages with it, which is correct — a stage
+     * has no meaning apart from the workflow it belongs to — and is the one
+     * cascade in this area that is deliberate.
+     */
+    it("deletes a workflow and its stages together", async () => {
+      await db.transaction((tx) => writer.deleteWorkflow(tx, CREATED_WORKFLOW));
+
+      const configuration = await new PostgresConfigurationRepository(db).load(HOSPITAL);
+      expect(configuration!.workflows.map((w) => w.id)).not.toContain(CREATED_WORKFLOW);
+
+      const stages = await db.query(
+        `SELECT id FROM workflow_stages WHERE workflow_id = $1`,
+        [CREATED_WORKFLOW],
+      );
+      expect(stages).toHaveLength(0);
+    });
+
+    it("creates, updates and deletes a role", async () => {
+      const repository = new PostgresConfigurationRepository(db);
+
+      await db.transaction((tx) =>
+        writer.createRole(
+          tx,
+          HOSPITAL,
+          {
+            id: CREATED_ROLE,
+            name: "Pharmacist",
+            description: "Dispenses medication",
+            permissions: ["queue.call"],
+            isSystem: false,
+          },
+          new Date(),
+        ),
+      );
+      expect((await repository.loadRoles(HOSPITAL)).map((r) => r.name)).toContain("Pharmacist");
+
+      await db.transaction((tx) =>
+        writer.updateRole(
+          tx,
+          HOSPITAL,
+          {
+            id: CREATED_ROLE,
+            name: "Pharmacist",
+            description: "Dispenses medication",
+            permissions: ["queue.call", "queue.complete"],
+            isSystem: false,
+          },
+          new Date(),
+        ),
+      );
+      const updated = (await repository.loadRoles(HOSPITAL)).find((r) => r.id === CREATED_ROLE);
+      expect(updated?.permissions).toEqual(["queue.call", "queue.complete"]);
+
+      await db.transaction((tx) => writer.deleteRole(tx, HOSPITAL, CREATED_ROLE));
+      expect((await repository.loadRoles(HOSPITAL)).map((r) => r.id)).not.toContain(CREATED_ROLE);
+    });
+
+    /**
+     * Built-in roles exist so a hospital cannot delete every administrative
+     * role and lock itself out. The SQL refuses them, not just the service.
+     */
+    it("will not delete a system role", async () => {
+      const systemRole = "ffffffff-1111-2222-3333-444444444444";
+      await db.transaction((tx) =>
+        writer.createRole(
+          tx,
+          HOSPITAL,
+          {
+            id: systemRole,
+            name: "Built in",
+            description: "",
+            permissions: ["admin.users"],
+            isSystem: true,
+          },
+          new Date(),
+        ),
+      );
+
+      await db.transaction((tx) => writer.deleteRole(tx, HOSPITAL, systemRole));
+
+      const roles = await new PostgresConfigurationRepository(db).loadRoles(HOSPITAL);
+      expect(roles.map((r) => r.id)).toContain(systemRole);
+    });
+
+    it("counts the users holding a role", async () => {
+      const usage = await db.transaction((tx) => writer.roleUsage(tx, ROLE));
+      expect(usage.find((u) => u.singular === "user")?.count).toBe(1);
+    });
+  });
+
   describe("board directory", () => {
     it("resolves a board to its branch and stations", async () => {
       const boardId = "77777777-7777-7777-7777-777777777777";
