@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --build && node dist/index.js",
     "migrate": "tsc --build && node dist/migrate.js",
-    "verify:db": "vitest run src/integration.test.ts --root ../..",
+    "verify:db": "vitest run src/integration.test.ts src/provisioning.integration.test.ts --root ../..",
     "bootstrap": "tsc --build && node dist/bootstrap-cli.js"
   },
   "dependencies": {

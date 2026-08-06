@@ -15,7 +15,17 @@
  * from one built up through the configuration screens, which is the point.
  */
 import { randomUUID } from "node:crypto";
-import { DEFAULT_ROLES, type RoleConfig } from "@qman/domain";
+import {
+  DEFAULT_TICKET_TEMPLATE,
+  DEFAULT_ROLES,
+  StationId,
+  BranchId,
+  WorkflowId,
+  WorkflowStageId,
+  type RoleConfig,
+  type StationConfig,
+  type Workflow,
+} from "@qman/domain";
 import type { ConfigurationWriter, Database } from "@qman/persistence";
 import { hashPassword } from "./passwords.js";
 import type { OrganizationProvisioning } from "./platform-routes.js";
@@ -54,19 +64,21 @@ export class PostgresOrganizationProvisioning implements OrganizationProvisionin
     const hashed = await hashPassword(password);
 
     const organizationId = await this.db.transaction(async (tx) => {
-      const [hospital] = await tx.query<{ id: string }>(
+      const [hospitalRow] = await tx.query<{ id: string }>(
         `INSERT INTO hospitals (name, code, timezone, status, created_at, updated_at)
          VALUES ($1, $2, $3, 'active', $4, $4)
          RETURNING id`,
         [input.name, input.code, input.timezone, input.at],
       );
-      const hospitalId = hospital!.id;
+      const hospitalId = hospitalRow!.id;
 
-      await tx.query(
+      const [branchRow] = await tx.query<{ id: string }>(
         `INSERT INTO branches (hospital_id, name, code, is_default, created_at)
-         VALUES ($1, $2, 'main', true, $3)`,
+         VALUES ($1, $2, 'main', true, $3)
+         RETURNING id`,
         [hospitalId, input.branchName, input.at],
       );
+      const branchId = branchRow!.id;
 
       /*
        * Fresh ids per organization.
@@ -82,6 +94,77 @@ export class PostgresOrganizationProvisioning implements OrganizationProvisionin
         if (role.id === adminTemplate.id) adminRoleId = id;
         await this.writer.createRole(tx, hospitalId, { ...role, id }, input.at);
       }
+
+      /*
+       * A starter configuration, because an empty one is not a valid one.
+       *
+       * `validateHospitalConfiguration` requires at least one ticket template
+       * and at least one workflow, and a workflow requires a stage, and a stage
+       * requires a station. Configuration writes validate the whole document,
+       * so an organization created without these cannot be configured at all:
+       * the administrator's first attempt to add a station is refused for the
+       * workflow and template that were never there. That is a deadlock with no
+       * way out through the product.
+       *
+       * So provisioning creates the smallest configuration that is valid and
+       * useful — one Reception station, one workflow through it, and the
+       * domain's default ticket template. Everything here is ordinary
+       * configuration the administrator can rename, extend or replace.
+       */
+      const stationId = StationId(randomUUID());
+      const reception: StationConfig = {
+        id: stationId,
+        name: "Reception",
+        code: "REC",
+        room: null,
+        staffing: 1,
+        serviceEstimateMillis: 600_000,
+        sla: { targetWaitMillis: 1_800_000, saturationPoint: 20 },
+        queueNumber: { template: "{n:3}", reset: "daily" },
+        isPublic: true,
+        enabled: true,
+      };
+      await this.writer.createStation(tx, branchId, reception, input.at);
+
+      const workflow: Workflow = {
+        id: WorkflowId(randomUUID()),
+        branchId: BranchId(branchId),
+        name: "General",
+        isDefault: true,
+        stages: [
+          {
+            id: WorkflowStageId(randomUUID()),
+            stationId,
+            sequence: 1,
+            isRequired: true,
+            allowSkip: false,
+            allowRepeat: false,
+            branchesTo: [],
+          },
+        ],
+      };
+      await this.writer.createWorkflow(tx, branchId, workflow, input.at);
+
+      // A fresh id, for the reason the roles get one: DEFAULT_TICKET_TEMPLATE
+      // is a template carrying the stable id "ticket-default", which is not a
+      // uuid and could not be shared between organizations even if it were.
+      const ticketTemplateId = randomUUID();
+      await this.writer.createTicketTemplate(
+        tx,
+        hospitalId,
+        { ...DEFAULT_TICKET_TEMPLATE, id: ticketTemplateId },
+        input.at,
+      );
+
+      // The hospital's own settings row, naming the template tickets print
+      // from. Without it `configuration.load` has no defaults to return and the
+      // organization reads as unconfigured.
+      await this.writer.updateDefaults(
+        tx,
+        hospitalId,
+        { namePolicy: "ticket_only", ticketTemplateId },
+        input.at,
+      );
 
       await tx.query(
         `INSERT INTO users

@@ -97,6 +97,12 @@ suite("persistence against real PostgreSQL", () => {
         "004_idempotency",
         "005_tracking_tokens",
         "006_deferred_current_entry",
+        "007_platform_users",
+        "008_platform_sessions",
+        "009_platform_events",
+        "010_platform_login_throttle",
+        "011_organization_lifecycle",
+        "012_administrative_events_have_no_branch",
       ]);
     }, 120_000);
 
@@ -140,7 +146,10 @@ suite("persistence against real PostgreSQL", () => {
     it("applies nothing on a second run", async () => {
       const outcome = await migrate(db, loadMigrations());
       expect(outcome.applied).toEqual([]);
-      expect(outcome.skipped).toHaveLength(6);
+      // Every migration that ships, skipped. Counted from the loader rather
+      // than hardcoded, so adding one cannot make this pass by describing
+      // fewer migrations than exist.
+      expect(outcome.skipped).toHaveLength(loadMigrations().length);
     }, 60_000);
 
     it("refuses to run when an applied migration has been edited", async () => {

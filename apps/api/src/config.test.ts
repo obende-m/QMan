@@ -135,6 +135,7 @@ describe("migration loading", () => {
       "009_platform_events",
       "010_platform_login_throttle",
       "011_organization_lifecycle",
+      "012_administrative_events_have_no_branch",
     ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
   });
