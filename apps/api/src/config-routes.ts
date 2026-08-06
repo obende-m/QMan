@@ -16,7 +16,12 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { validateHospitalConfiguration } from "@qman/domain";
 import type { ConfigurationRepository } from "@qman/persistence";
-import { requirePermission, requireSignedIn, type GuardDependencies } from "./authorization.js";
+import {
+  requirePermission,
+  requireSignedIn,
+  tenantOf,
+  type GuardDependencies,
+} from "./authorization.js";
 import type { Logger } from "./logging.js";
 import { V1 } from "./version.js";
 
@@ -24,7 +29,6 @@ export interface ConfigRouteDependencies {
   readonly guards: GuardDependencies;
   readonly configuration: ConfigurationRepository;
   readonly logger: Logger;
-  readonly resolveHospital: (request: FastifyRequest) => string;
 }
 
 export function registerConfigRoutes(
@@ -44,7 +48,7 @@ export function registerConfigRoutes(
     `${V1}/config`,
     { preHandler: requireSignedIn(deps.guards) },
     async (request, reply) => {
-      const hospitalId = deps.resolveHospital(request);
+      const hospitalId = tenantOf(request);
       const configuration = await deps.configuration.load(hospitalId);
 
       if (configuration === null) {
@@ -79,7 +83,7 @@ export function registerConfigRoutes(
     `${V1}/roles`,
     { preHandler: requirePermission(deps.guards, "admin.users") },
     async (request, reply) => {
-      const roles = await deps.configuration.loadRoles(deps.resolveHospital(request));
+      const roles = await deps.configuration.loadRoles(tenantOf(request));
       return reply.status(200).send({ roles });
     },
   );

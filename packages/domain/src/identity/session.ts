@@ -58,8 +58,22 @@ export const DEFAULT_SESSION_POLICY: SessionPolicy = {
 
 export type SessionStatus = "active" | "idle" | "expired" | "ended";
 
+/**
+ * The three timestamps a lifetime decision needs.
+ *
+ * Stated as its own type so that platform sessions — which have no branch, no
+ * provider and no device — are judged by this same policy rather than by a
+ * second copy of it that drifts. `Session` satisfies it structurally; nothing
+ * else about either session shape is relevant to whether it has expired.
+ */
+export interface SessionLifetime {
+  readonly startedAt: Date;
+  readonly lastActiveAt: Date;
+  readonly endedAt: Date | null;
+}
+
 export function sessionStatus(
-  session: Session,
+  session: SessionLifetime,
   now: Date,
   policy: SessionPolicy = DEFAULT_SESSION_POLICY,
 ): SessionStatus {
@@ -81,7 +95,7 @@ export function sessionStatus(
 }
 
 export function isUsable(
-  session: Session,
+  session: SessionLifetime,
   now: Date,
   policy: SessionPolicy = DEFAULT_SESSION_POLICY,
 ): boolean {

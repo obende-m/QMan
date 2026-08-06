@@ -25,6 +25,7 @@ import { isJourneyCode, normaliseJourneyCode, type BranchId, type Visit } from "
 import type { VisitRepository } from "@qman/persistence";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { hashToken } from "./tokens.js";
+import type { OrganizationDirectoryRepository } from "@qman/persistence";
 import type { Logger } from "./logging.js";
 import { V1 } from "./version.js";
 
@@ -34,6 +35,15 @@ export interface PublicRouteDependencies {
   readonly now: () => Date;
   /** Resolves a board id to the branch and stations it displays. */
   readonly boards: BoardDirectory;
+  /**
+   * Used only to ask whether the organization behind a branch is suspended.
+   *
+   * The public surfaces are the reason suspension means anything to the people
+   * standing in the building. A suspended hospital whose display boards kept
+   * calling patients would be suspended in billing terms and running in every
+   * other sense.
+   */
+  readonly organizations: OrganizationDirectoryRepository;
   readonly trackerLimiter?: RateLimiter;
 }
 
@@ -46,6 +56,21 @@ export interface BoardDefinition {
 
 export interface BoardDirectory {
   find(boardId: string): Promise<BoardDefinition | null>;
+}
+
+/**
+ * Whether a branch's organization is active.
+ *
+ * False for a suspended organization and false for a branch that does not
+ * exist, so every caller can treat both as "not found" without deciding which
+ * it was.
+ */
+async function servingPublicly(
+  deps: PublicRouteDependencies,
+  branchId: string,
+): Promise<boolean> {
+  const organization = await deps.organizations.findByBranch(branchId);
+  return organization !== null && organization.status === "active";
 }
 
 /**
@@ -137,6 +162,14 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "No such board." });
     }
 
+    if (!(await servingPublicly(deps, board.branchId))) {
+      // Answered exactly as a missing board is. A screen in a waiting room
+      // shows "this board is not configured" either way, and distinguishing
+      // the two would publish the commercial status of a hospital to anyone
+      // who can reach the endpoint.
+      return reply.status(404).send({ error: "No such board." });
+    }
+
     const visits = await deps.visits.activeInBranch(board.branchId as BranchId);
     const stations = new Set(board.stationIds);
 
@@ -170,6 +203,10 @@ export function registerPublicRoutes(
 
     const visit = await deps.visits.findByTrackingToken(hashToken(token));
     if (visit === null) {
+      return reply.status(404).send({ error: "That tracking link is not valid." });
+    }
+
+    if (!(await servingPublicly(deps, visit.branchId))) {
       return reply.status(404).send({ error: "That tracking link is not valid." });
     }
 
@@ -216,6 +253,10 @@ export function registerPublicRoutes(
     if (!isJourneyCode(code)) {
       // Answered exactly as a valid-but-unknown code is. Distinguishing
       // "malformed" from "not found" tells an enumerator which shapes are real.
+      return reply.status(404).send({ error: "That code was not found." });
+    }
+
+    if (!(await servingPublicly(deps, branchId))) {
       return reply.status(404).send({ error: "That code was not found." });
     }
 

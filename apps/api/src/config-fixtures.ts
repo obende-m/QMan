@@ -5,6 +5,7 @@
  * exercise the same fakes: two copies of a fake database drift, and the second
  * copy is always the one that stops matching how the real loader reads.
  */
+import type { OrganizationDirectoryRepository } from "@qman/persistence";
 import {
   DEFAULT_TICKET_TEMPLATE,
   UserId,
@@ -12,6 +13,7 @@ import {
   type RoleConfig,
   type Session,
   type StationConfig,
+  type Organization,
 } from "@qman/domain";
 import {
   FakeDatabase,
@@ -367,3 +369,85 @@ export function credentialsFrom(setCookie: string | string[] | undefined): {
     ),
   };
 }
+
+/**
+ * An in-memory organization directory for tests.
+ *
+ * Defaults to one active organization, `HOSPITAL`, reachable by the code
+ * "testhospital". Tests that care about tenancy add a second; tests that care
+ * about suspension change a status. Nothing here interprets the data — it is
+ * the same shape the Postgres directory returns.
+ */
+export function fakeOrganizations(
+  overrides: ReadonlyArray<Partial<Organization> & { id: string }> = [],
+): OrganizationDirectoryRepository & {
+  set(id: string, changes: Partial<Organization>): void;
+  addBranch(branchId: string, hospitalId: string): void;
+} {
+  const base = (id: string, code: string): Organization => ({
+    id,
+    code,
+    name: `Organization ${code}`,
+    status: "active",
+    timezone: "UTC",
+    suspendedAt: null,
+    suspendedReason: null,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  });
+
+  const rows = new Map<string, Organization>([[HOSPITAL, base(HOSPITAL, "testhospital")]]);
+  for (const override of overrides) {
+    rows.set(override.id, { ...base(override.id, override.id.slice(0, 8)), ...override });
+  }
+
+  const branches = new Map<string, string>([[BRANCH, HOSPITAL]]);
+
+  return {
+    set(id, changes) {
+      const existing = rows.get(id);
+      if (existing !== undefined) rows.set(id, { ...existing, ...changes });
+    },
+    addBranch(branchId, hospitalId) {
+      branches.set(branchId, hospitalId);
+    },
+    async findById(id) {
+      return rows.get(id) ?? null;
+    },
+    async findByCode(code) {
+      for (const row of rows.values()) {
+        if (row.code.toLowerCase() === code.toLowerCase()) return row;
+      }
+      return null;
+    },
+    async findByBranch(branchId) {
+      const hospitalId = branches.get(branchId);
+      return hospitalId === undefined ? null : (rows.get(hospitalId) ?? null);
+    },
+    async list() {
+      return [...rows.values()].map((row) => ({ ...row, branchCount: 1, userCount: 1 }));
+    },
+    async setStatus(id, status, reason, at) {
+      const existing = rows.get(id);
+      if (existing === undefined) return;
+      rows.set(id, {
+        ...existing,
+        status,
+        suspendedAt: status === "suspended" ? at : null,
+        suspendedReason: status === "suspended" ? reason : null,
+      });
+    },
+    async rename(id, name, code) {
+      const existing = rows.get(id);
+      if (existing !== undefined) rows.set(id, { ...existing, name, code });
+    },
+    async isCodeTaken(code, exceptId) {
+      for (const row of rows.values()) {
+        if (row.code.toLowerCase() === code.toLowerCase() && row.id !== exceptId) return true;
+      }
+      return false;
+    },
+  };
+}
+
+/** The organization code the default fake directory answers to. */
+export const ORGANIZATION_CODE = "testhospital";

@@ -1,3 +1,4 @@
+import { ORGANIZATION_CODE, fakeOrganizations } from "./config-fixtures.js";
 /**
  * The controls that stand between a request and a handler.
  *
@@ -6,6 +7,8 @@
  * invalid ones looks perfectly healthy from the outside.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import { ownedByTenant } from "./authorization.js";
 import { UserId, type Session } from "@qman/domain";
 import type { AccountRepository, SessionRepository, StoredAccount } from "@qman/persistence";
 import { AuthService, createMemoryLockoutStore } from "./auth.js";
@@ -89,7 +92,10 @@ async function account(
 function harness(
   accounts: FakeAccounts,
   sessions: FakeSessions,
-  overrides: { hospital?: string; lines?: string[] } = {},
+  overrides: {
+    organizations?: ReturnType<typeof fakeOrganizations>;
+    lines?: string[];
+  } = {},
 ) {
   let counter = 0;
   const auth = new AuthService({
@@ -101,7 +107,7 @@ function harness(
   });
   return buildServer({
     auth,
-    resolveHospital: () => overrides.hospital ?? HOSPITAL,
+    organizations: overrides.organizations ?? fakeOrganizations(),
     secureCookies: true,
     allowedOrigins: [ORIGIN],
     logger: createLogger({ write: (line) => overrides.lines?.push(line) }),
@@ -134,7 +140,7 @@ describe("authorization", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     return {
       cookie: cookies(login.headers["set-cookie"]),
@@ -200,24 +206,124 @@ describe("authorization", () => {
    * A valid session for one hospital must not reach another's data even with
    * the right permission. Worth an alarm rather than a quiet refusal.
    */
-  it("refuses a session whose account belongs to a different hospital", async () => {
-    accounts.accounts.push(await account(["admin.users"]));
+  /**
+   * The defence-in-depth guard of PLATFORM-TENANCY §6.2.
+   *
+   * The tenant now comes from the session, so the old form of this test — point
+   * the server at a different hospital and present a valid cookie — no longer
+   * describes anything reachable: there is no configuration or request field
+   * that names a tenant. What can still go wrong is a repository handing back a
+   * row belonging to somebody else, and that is what this asserts.
+   *
+   * The guard is exercised directly rather than through a route, because the
+   * whole point is a failure no correctly written route can produce.
+   */
+  it("refuses a resource owned by another organization, and raises an alarm", async () => {
     const lines: string[] = [];
-    const app = harness(accounts, sessions);
-    const { cookie } = await signIn(app);
+    const logger = createLogger({ write: (line) => lines.push(line) });
+    const stored = await account(["admin.users"]);
 
-    const elsewhere = harness(accounts, sessions, {
-      hospital: "99999999-9999-9999-9999-999999999999",
-      lines,
-    });
-    const response = await elsewhere.inject({
-      method: "GET",
-      url: "/api/v1/sessions",
-      headers: { cookie },
-    });
+    let status = 0;
+    let body: unknown = null;
+    const reply = {
+      status(code: number) {
+        status = code;
+        return this;
+      },
+      send(payload: unknown) {
+        body = payload;
+        return this;
+      },
+    } as unknown as FastifyReply;
 
-    expect(response.statusCode).toBe(403);
+    const request = {
+      requestId: "req-1",
+      url: "/api/v1/anything",
+      authenticated: {
+        user: { account: stored.account, permissions: stored.permissions, branchId: null },
+        session: null,
+        hospitalId: HOSPITAL,
+      },
+    } as unknown as FastifyRequest;
+
+    const allowed = ownedByTenant(
+      { auth: null as never, logger },
+      request,
+      reply,
+      "99999999-9999-9999-9999-999999999999",
+      "visit",
+    );
+
+    expect(allowed).toBe(false);
+    // 404, not 403: telling an unauthorised caller apart from an unlucky one
+    // reveals whether the id they hold exists in another organization.
+    expect(status).toBe(404);
+    expect(body).toEqual({ error: "No such visit." });
     expect(lines.join("")).toContain("cross-tenant request refused");
+  });
+
+  it("allows a resource owned by the caller's own organization", async () => {
+    const stored = await account(["admin.users"]);
+    const reply = {
+      status() {
+        return this;
+      },
+      send() {
+        return this;
+      },
+    } as unknown as FastifyReply;
+
+    const allowed = ownedByTenant(
+      { auth: null as never, logger: createLogger({ write: () => {} }) },
+      {
+        requestId: "req-2",
+        url: "/api/v1/anything",
+        authenticated: {
+          user: { account: stored.account, permissions: stored.permissions, branchId: null },
+          session: null,
+          hospitalId: HOSPITAL,
+        },
+      } as unknown as FastifyRequest,
+      reply,
+      HOSPITAL,
+      "visit",
+    );
+
+    expect(allowed).toBe(true);
+  });
+
+  /** A resource that does not exist is refused the same way, and says so. */
+  it("refuses a resource that does not exist, with the same answer", async () => {
+    const stored = await account(["admin.users"]);
+    let status = 0;
+    const reply = {
+      status(code: number) {
+        status = code;
+        return this;
+      },
+      send() {
+        return this;
+      },
+    } as unknown as FastifyReply;
+
+    const allowed = ownedByTenant(
+      { auth: null as never, logger: createLogger({ write: () => {} }) },
+      {
+        requestId: "req-3",
+        url: "/api/v1/anything",
+        authenticated: {
+          user: { account: stored.account, permissions: stored.permissions, branchId: null },
+          session: null,
+          hospitalId: HOSPITAL,
+        },
+      } as unknown as FastifyRequest,
+      reply,
+      null,
+      "visit",
+    );
+
+    expect(allowed).toBe(false);
+    expect(status).toBe(404);
   });
 });
 
@@ -237,7 +343,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: "https://malicious.example" },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     expect(response.statusCode).toBe(403);
   });
@@ -248,7 +354,7 @@ describe("cross-site request forgery", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     expect(response.statusCode).toBe(403);
   });
@@ -259,7 +365,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { referer: `${ORIGIN}/index.html` },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     expect(response.statusCode).toBe(200);
   });
@@ -275,7 +381,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     const cookie = cookies(login.headers["set-cookie"]);
 
@@ -293,7 +399,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     const cookie = cookies(login.headers["set-cookie"]);
 
@@ -311,7 +417,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     const response = await app.inject({
@@ -333,7 +439,7 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     const set = login.headers["set-cookie"] as string[];
@@ -360,13 +466,13 @@ describe("cross-site request forgery", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     const second = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(csrfToken(first.headers["set-cookie"])).not.toBe(
@@ -434,7 +540,7 @@ describe("login rate limiting", () => {
     });
     const app = buildServer({
       auth,
-      resolveHospital: () => HOSPITAL,
+      organizations: fakeOrganizations(),
       secureCookies: true,
       allowedOrigins: [ORIGIN],
       rateLimiter: createRateLimiter({ limit: 2, windowMillis: 60_000 }),
@@ -446,7 +552,7 @@ describe("login rate limiting", () => {
         method: "POST",
         url: "/api/v1/auth/login",
         headers: { origin: ORIGIN },
-        payload: { username: "ifeoma", password: PASSWORD },
+        payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
       });
 
     expect((await attempt()).statusCode).toBe(200);

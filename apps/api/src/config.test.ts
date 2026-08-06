@@ -4,16 +4,28 @@ import { loadMigrations, migrationsDirectory } from "./migrations.js";
 
 const MINIMUM = {
   DATABASE_URL: "postgres://qman:secret@db.example:5432/qman",
-  QMAN_HOSPITAL_ID: "11111111-1111-1111-1111-111111111111",
   QMAN_ALLOWED_ORIGINS: "https://qman.hospital.example",
 } satisfies NodeJS.ProcessEnv;
 
 describe("configuration", () => {
-  it("refuses to start without a database or a hospital", () => {
+  it("refuses to start without a database or allowed origins", () => {
     expect(() => loadConfig({})).toThrow(ConfigurationError);
     expect(() => loadConfig({ DATABASE_URL: MINIMUM.DATABASE_URL })).toThrow(
-      /QMAN_HOSPITAL_ID/,
+      /QMAN_ALLOWED_ORIGINS/,
     );
+  });
+
+  /**
+   * The variable is refused rather than ignored.
+   *
+   * A deployment still setting it was configured under the belief that this
+   * server serves one named hospital. That belief is now wrong, and ignoring
+   * the variable would let the server run happily while its operator kept it.
+   */
+  it("refuses to start when the single-tenant hospital variable is still set", () => {
+    expect(() =>
+      loadConfig({ ...MINIMUM, QMAN_HOSPITAL_ID: "11111111-1111-1111-1111-111111111111" }),
+    ).toThrow(/QMAN_HOSPITAL_ID/);
   });
 
   /**
@@ -118,6 +130,11 @@ describe("migration loading", () => {
       "004_idempotency",
       "005_tracking_tokens",
       "006_deferred_current_entry",
+      "007_platform_users",
+      "008_platform_sessions",
+      "009_platform_events",
+      "010_platform_login_throttle",
+      "011_organization_lifecycle",
     ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
   });

@@ -46,3 +46,30 @@ export function hashesMatch(a: string, b: string): boolean {
   if (left.length !== right.length) return false;
   return timingSafeEqual(left, right);
 }
+
+/**
+ * A password a person has to type once.
+ *
+ * Generated for a new organization's administrator and for a password reset,
+ * then shown exactly once and never stored in plaintext. It is read off a
+ * screen and typed into another, so the alphabet omits the characters that are
+ * misread doing that: no O or 0, no I, l or 1. That is the same reasoning, and
+ * the same exclusions, as the Journey Code alphabet in the domain.
+ *
+ * Grouped with hyphens because a 20-character run of random characters is
+ * transcribed wrongly far more often than four groups of five.
+ */
+const PASSWORD_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
+
+export function generatePassword(groups = 4, size = 5): string {
+  const bytes = randomBytes(groups * size);
+  const characters: string[] = [];
+  for (let index = 0; index < groups * size; index += 1) {
+    // Modulo bias is negligible here: the alphabet is 55 characters against a
+    // 256-value byte, and the value being protected is rotated on first use.
+    characters.push(PASSWORD_ALPHABET[bytes[index]! % PASSWORD_ALPHABET.length]!);
+  }
+  return Array.from({ length: groups }, (_, group) =>
+    characters.slice(group * size, group * size + size).join(""),
+  ).join("-");
+}

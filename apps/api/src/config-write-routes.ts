@@ -35,7 +35,7 @@ import {
   type Workflow,
 } from "@qman/domain";
 import type { ConfigurationWriter, EntityUsage } from "@qman/persistence";
-import { requirePermission, type GuardDependencies } from "./authorization.js";
+import { requirePermission, tenantOf, type GuardDependencies } from "./authorization.js";
 import type {
   ConfigurationChange,
   ConfigurationService,
@@ -50,7 +50,6 @@ export interface ConfigWriteDependencies {
   readonly service: ConfigurationService;
   readonly writer: ConfigurationWriter;
   readonly logger: Logger;
-  readonly resolveHospital: (request: FastifyRequest) => string;
   readonly idempotency?: IdempotencyDependencies;
 }
 
@@ -92,7 +91,7 @@ async function applyChange(
 
   const result = await deps.service.apply(
     {
-      hospitalId: deps.resolveHospital(request),
+      hospitalId: tenantOf(request),
       actorId: authenticated.user.account.id,
       sessionId: authenticated.session.id,
       requestId: request.requestId,
@@ -104,7 +103,7 @@ async function applyChange(
   if (!result.ok) {
     deps.logger.warn("configuration change rejected", {
       requestId: request.requestId,
-      hospitalId: deps.resolveHospital(request),
+      hospitalId: tenantOf(request),
       userId: authenticated.user.account.id,
       path: request.url,
       problems: result.problems.map((problem: ConfigProblem) => problem.path),
@@ -115,7 +114,7 @@ async function applyChange(
 
   deps.logger.info("configuration changed", {
     requestId: request.requestId,
-    hospitalId: deps.resolveHospital(request),
+    hospitalId: tenantOf(request),
     userId: authenticated.user.account.id,
     path: request.url,
   });
@@ -188,7 +187,7 @@ async function applyRoleChange(
 
   const result = await deps.service.applyToRoles(
     {
-      hospitalId: deps.resolveHospital(request),
+      hospitalId: tenantOf(request),
       actorId: authenticated.user.account.id,
       sessionId: authenticated.session.id,
       requestId: request.requestId,
@@ -200,7 +199,7 @@ async function applyRoleChange(
   if (!result.ok) {
     deps.logger.warn("role change rejected", {
       requestId: request.requestId,
-      hospitalId: deps.resolveHospital(request),
+      hospitalId: tenantOf(request),
       userId: authenticated.user.account.id,
       path: request.url,
     });
@@ -210,7 +209,7 @@ async function applyRoleChange(
 
   deps.logger.info("roles changed", {
     requestId: request.requestId,
-    hospitalId: deps.resolveHospital(request),
+    hospitalId: tenantOf(request),
     userId: authenticated.user.account.id,
     path: request.url,
   });
@@ -635,7 +634,7 @@ export function registerConfigWriteRoutes(
         if (created !== undefined) {
           await deps.writer.createTicketTemplate(
             tx,
-            deps.resolveHospital(request),
+            tenantOf(request),
             created,
             at,
           );
@@ -668,7 +667,7 @@ export function registerConfigWriteRoutes(
         ticketTemplates: config.ticketTemplates.filter((t) => t.id !== id),
       }),
       persist: (tx) =>
-        deps.writer.deleteTicketTemplate(tx, deps.resolveHospital(request), id),
+        deps.writer.deleteTicketTemplate(tx, tenantOf(request), id),
       describe: (before) => ({
         type: "config.ticket_template_updated",
         summary: `Ticket template ${find(before)?.name ?? id} deleted`,
@@ -708,7 +707,7 @@ export function registerConfigWriteRoutes(
         if (updated !== undefined) {
           await deps.writer.updateTicketTemplate(
             tx,
-            deps.resolveHospital(request),
+            tenantOf(request),
             updated,
             at,
           );
@@ -772,7 +771,7 @@ export function registerConfigWriteRoutes(
       persist: async (tx, next, at) => {
         const created = next.find((role) => role.id === id);
         if (created !== undefined) {
-          await deps.writer.createRole(tx, deps.resolveHospital(request), created, at);
+          await deps.writer.createRole(tx, tenantOf(request), created, at);
         }
       },
       describe: (_before, after) => ({
@@ -804,7 +803,7 @@ export function registerConfigWriteRoutes(
       persist: async (tx, next, at) => {
         const updated = next.find((role) => role.id === id);
         if (updated !== undefined) {
-          await deps.writer.updateRole(tx, deps.resolveHospital(request), updated, at);
+          await deps.writer.updateRole(tx, tenantOf(request), updated, at);
         }
       },
       /**
@@ -841,7 +840,7 @@ export function registerConfigWriteRoutes(
        * itself out; the database refuses it too.
        */
       apply: (roles) => roles.filter((role) => role.id !== id || role.isSystem),
-      persist: (tx) => deps.writer.deleteRole(tx, deps.resolveHospital(request), id),
+      persist: (tx) => deps.writer.deleteRole(tx, tenantOf(request), id),
       describe: (before) => ({
         type: "config.role_deleted",
         summary: `Role ${before.find((r) => r.id === id)?.name ?? id} deleted`,
@@ -872,7 +871,7 @@ export function registerConfigWriteRoutes(
         },
       }),
       persist: (tx, next, at) =>
-        deps.writer.updateDefaults(tx, deps.resolveHospital(request), next.defaults, at),
+        deps.writer.updateDefaults(tx, tenantOf(request), next.defaults, at),
       describe: (before, after) => {
         if (before.defaults.namePolicy !== after.defaults.namePolicy) {
           return {

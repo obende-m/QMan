@@ -26,6 +26,8 @@ import {
   primeConfigurationRead,
   RecordingWriter,
   STATION,
+  fakeOrganizations,
+  ORGANIZATION_CODE,
 } from "./config-fixtures.js";
 
 describe("configuration writes", () => {
@@ -43,7 +45,7 @@ describe("configuration writes", () => {
         now: () => new Date("2026-03-09T09:00:00Z"),
         newId: () => "session-1",
       }),
-      resolveHospital: () => HOSPITAL,
+      organizations: fakeOrganizations(),
       secureCookies: true,
       allowedOrigins: [ORIGIN],
       logger: silentLogger(),
@@ -64,7 +66,7 @@ describe("configuration writes", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "adaeze", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "adaeze", password: PASSWORD },
     });
     return credentialsFrom(login.headers["set-cookie"]);
   }

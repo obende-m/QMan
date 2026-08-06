@@ -20,7 +20,17 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import type { AuthenticatedUser, Session } from "@qman/domain";
-import type { AuthService } from "./auth.js";
+import { GENERIC_AUTH_FAILURE, type AuthService } from "./auth.js";
+import type {
+  OrganizationDirectoryRepository,
+  PlatformEventRepository,
+  PlatformUserRepository,
+} from "@qman/persistence";
+import type { PlatformAuthService, ResolvedPlatformSession } from "./platform-auth.js";
+import {
+  registerPlatformRoutes,
+  type OrganizationProvisioning,
+} from "./platform-routes.js";
 import {
   readSessionToken,
   requirePermission,
@@ -47,13 +57,15 @@ export interface ServerOptions {
   readonly logger?: Logger;
   /**
    * Which hospital a request belongs to.
-   *
-   * A function rather than a constant because the tenant boundary is real even
-   * while there is one tenant: a single-hospital deployment answers with its
-   * configured id, and a hosted one will read a subdomain. Nothing downstream
-   * changes when that happens.
    */
-  readonly resolveHospital: (request: FastifyRequest) => string;
+  readonly organizations: OrganizationDirectoryRepository;
+  /** Platform administration. Registered only when its service exists. */
+  readonly platform?: {
+    readonly auth: PlatformAuthService;
+    readonly events: PlatformEventRepository;
+    readonly users: PlatformUserRepository;
+    readonly provisioning: OrganizationProvisioning;
+  };
   /**
    * Whether to mark cookies Secure. False only for plain-HTTP local
    * development — a Secure cookie is never sent over HTTP, so leaving it on
@@ -68,26 +80,39 @@ export interface ServerOptions {
   readonly https?: boolean;
   readonly stream?: EventStream;
   /** The configuration read. Registered only when its repository exists. */
-  readonly configuration?: Omit<ConfigRouteDependencies, "guards" | "logger" | "resolveHospital">;
+  readonly configuration?: Omit<ConfigRouteDependencies, "guards" | "logger">;
   /** Configuration writes. Registered only when the service exists. */
-  readonly configurationWrites?: Omit<
-    ConfigWriteDependencies,
-    "guards" | "logger" | "resolveHospital"
-  >;
+  readonly configurationWrites?: Omit<ConfigWriteDependencies, "guards" | "logger">;
   /** The two unauthenticated surfaces. Registered only when configured. */
   readonly publicSurfaces?: Omit<PublicRouteDependencies, "logger" | "now">;
   /** Business routes are registered only when their repositories exist. */
-  readonly queue?: Omit<QueueRouteDependencies, "guards" | "logger" | "resolveHospital" | "stream">;
+  readonly queue?: Omit<QueueRouteDependencies, "guards" | "logger" | "stream">;
 }
 
 declare module "fastify" {
   interface FastifyRequest {
     requestId: string;
     authenticated?: { user: AuthenticatedUser; session: Session; hospitalId: string };
+    /**
+     * Set only by the platform guard, and never by the organization one. The
+     * two live side by side on the request and neither reads the other.
+     */
+    platform?: ResolvedPlatformSession;
+    /**
+     * The tenant this request turned out to concern, for logging only.
+     *
+     * Authenticated requests take it from the session. Sign-in has no session
+     * yet but does resolve an organization, and a sign-in whose log entry
+     * cannot say which hospital it was for is the one entry an incident most
+     * needs. Never read for an authorization decision — `tenantOf` is the only
+     * source for that, and it reads the session.
+     */
+    tenantId?: string;
   }
 }
 
 interface Credentials {
+  organization?: unknown;
   username?: unknown;
   password?: unknown;
   branchId?: unknown;
@@ -135,11 +160,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const stream = options.stream ?? new EventStream();
   const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
 
-  const guards: GuardDependencies = {
-    auth: options.auth,
-    logger,
-    resolveHospital: options.resolveHospital,
-  };
+  const guards: GuardDependencies = { auth: options.auth, logger };
 
   /**
    * One identifier per request, minted here or adopted from a proxy that
@@ -195,8 +216,9 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       path: request.url,
       status: reply.statusCode,
       durationMillis: Math.round(reply.elapsedTime),
-      hospitalId: options.resolveHospital(request),
+      hospitalId: request.authenticated?.hospitalId ?? request.tenantId,
       userId: request.authenticated?.user.account.id,
+      platformUserId: request.platform?.user.id,
       branchId: request.authenticated?.session.branchId ?? null,
     });
   });
@@ -237,12 +259,70 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     const username = typeof body.username === "string" ? body.username.trim() : "";
     const password = typeof body.password === "string" ? body.password : "";
     const branchId = typeof body.branchId === "string" ? body.branchId : null;
+    const organizationCode =
+      typeof body.organization === "string" ? body.organization.trim() : "";
 
-    if (username === "" || password === "") {
-      return reply.status(400).send({ error: "Enter a username and password." });
+    if (username === "" || password === "" || organizationCode === "") {
+      return reply
+        .status(400)
+        .send({ error: "Enter an organization code, username and password." });
     }
 
-    const hospitalId = options.resolveHospital(request);
+    /*
+     * The one place an organization code becomes an organization id.
+     *
+     * After this line the code is not consulted again: the id scopes the
+     * session, every subsequent query and every audit record. That is what
+     * makes the code editable — it is a selector, not identity.
+     */
+    const organization = await options.organizations.findByCode(organizationCode);
+
+    /*
+     * An unknown organization is answered exactly as a wrong password is.
+     *
+     * Distinguishing them would turn this form into an oracle for which
+     * hospitals QMan hosts, which is commercially sensitive and is a list an
+     * attacker would otherwise have to guess. The delay is not equalised here
+     * because the expensive part — scrypt — runs in both cases below only when
+     * an organization was found; a lookup miss is answered from one indexed
+     * query and is not usefully distinguishable from a lookup hit.
+     */
+    if (organization === null) {
+      logger.warn("sign-in refused", {
+        requestId: request.requestId,
+        organizationCode,
+        reason: "unknown_organization",
+      });
+      return reply.status(401).send({
+        error: GENERIC_AUTH_FAILURE,
+        reason: "invalid_credentials",
+      });
+    }
+
+    /*
+     * Suspension is enforced before credentials are checked, and says so.
+     *
+     * This is the one place a specific message is right rather than uniform.
+     * The staff of a suspended hospital are not attackers probing for accounts;
+     * they are people whose employer's account is in arrears or under review,
+     * and "your organization is suspended, contact QMan" is information they
+     * can act on. A generic failure would send them to reset passwords that
+     * were never wrong.
+     */
+    if (organization.status !== "active") {
+      logger.warn("sign-in refused", {
+        requestId: request.requestId,
+        hospitalId: organization.id,
+        reason: "organization_suspended",
+      });
+      return reply.status(403).send({
+        error: "This organization is suspended. Contact QMan support.",
+        reason: "organization_suspended",
+      });
+    }
+
+    const hospitalId = organization.id;
+    request.tenantId = hospitalId;
     const result = await options.auth.signIn({
       hospitalId,
       username,
@@ -371,7 +451,6 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       ...options.configuration,
       guards,
       logger,
-      resolveHospital: options.resolveHospital,
     });
   }
 
@@ -380,12 +459,29 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       ...options.configurationWrites,
       guards,
       logger,
-      resolveHospital: options.resolveHospital,
     });
   }
 
   if (options.publicSurfaces) {
-    registerPublicRoutes(app, { ...options.publicSurfaces, logger, now });
+    registerPublicRoutes(app, {
+      ...options.publicSurfaces,
+      organizations: options.organizations,
+      logger,
+      now,
+    });
+  }
+
+  if (options.platform) {
+    registerPlatformRoutes(app, {
+      auth: options.platform.auth,
+      events: options.platform.events,
+      users: options.platform.users,
+      provisioning: options.platform.provisioning,
+      organizations: options.organizations,
+      logger,
+      now,
+      secureCookies: options.secureCookies,
+    });
   }
 
   if (options.queue) {
@@ -394,7 +490,6 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       guards,
       logger,
       stream,
-      resolveHospital: options.resolveHospital,
     });
   }
 

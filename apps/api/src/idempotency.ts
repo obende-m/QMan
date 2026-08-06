@@ -19,6 +19,7 @@
  */
 import { createHash } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { tenantOf } from "./authorization.js";
 import type { IdempotencyRepository } from "@qman/persistence";
 import type { Logger } from "./logging.js";
 
@@ -29,7 +30,6 @@ export const KEY_LIFETIME_MILLIS = 24 * 60 * 60_000;
 
 export interface IdempotencyDependencies {
   readonly repository: IdempotencyRepository;
-  readonly resolveHospital: (request: FastifyRequest) => string;
   readonly logger: Logger;
   readonly now: () => Date;
 }
@@ -73,7 +73,7 @@ export async function guard(
   const key = readKey(request);
   if (key === null) return { proceed: true, key: null };
 
-  const hospitalId = deps.resolveHospital(request);
+  const hospitalId = tenantOf(request);
   const print = fingerprint(request.method, request.url, request.body);
   const claim = await deps.repository.claim(hospitalId, key, print, deps.now());
 
@@ -143,7 +143,7 @@ export async function record(
 ): Promise<void> {
   if (key === null) return;
 
-  const hospitalId = deps.resolveHospital(request);
+  const hospitalId = tenantOf(request);
   if (statusCode >= 500 || statusCode === 409) {
     await deps.repository.release(hospitalId, key);
     return;

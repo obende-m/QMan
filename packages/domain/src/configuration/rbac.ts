@@ -7,8 +7,11 @@
  * a guard that is never applied at all.
  *
  * Roles, by contrast, are data: a hospital invents "Senior Triage Nurse" without
- * a release, and assigns it whichever permissions it likes.
+ * a release, and assigns it whichever permissions it likes — from this
+ * catalogue only. Platform administration has its own, and `validateRoles`
+ * refuses any grant that reaches across.
  */
+import { isPlatformPermission } from "../platform/permissions.js";
 
 export const PERMISSIONS = {
   "visit.create": "Create a visit",
@@ -151,6 +154,28 @@ export function can(role: RoleConfig, permission: Permission): boolean {
  */
 export function validateRoles(roles: readonly RoleConfig[]): string[] {
   const problems: string[] = [];
+
+  /*
+   * A hospital's role may never carry a platform permission.
+   *
+   * The type says it cannot, and over the wire the type is a suggestion: role
+   * writes arrive as JSON and `permissions` is whatever array was sent. Without
+   * this check an organization administrator holding `admin.users` could grant
+   * themselves `platform.organizations.create` by hand and leave their own
+   * tenant — using nothing but the feature they are meant to have.
+   *
+   * Checked by prefix, so a platform permission added in a later release is
+   * refused by this one rather than accepted as an unrecognised string.
+   */
+  for (const role of roles) {
+    for (const permission of role.permissions) {
+      if (isPlatformPermission(permission)) {
+        problems.push(
+          `“${role.name}” asks for ${permission}, which belongs to QMan platform administration and cannot be granted by a hospital.`,
+        );
+      }
+    }
+  }
 
   if (!roles.some((role) => can(role, "admin.users"))) {
     problems.push(

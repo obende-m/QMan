@@ -25,6 +25,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { FastifyRequest } from "fastify";
 import { SESSION_COOKIE } from "./authorization.js";
+import { PLATFORM_SESSION_COOKIE } from "./platform-authorization.js";
 
 export const CSRF_COOKIE = "qman_csrf";
 export const CSRF_HEADER = "x-csrf-token";
@@ -108,7 +109,21 @@ export function verifyCsrf(
     return { ok: false, reason: "origin" };
   }
 
-  if (readCookie(request, SESSION_COOKIE) === null) return { ok: true };
+  /*
+   * Only a cookie-authenticated request needs the double-submit check. A
+   * request carrying no session is not acting as anybody, so there is nothing
+   * for a forged one to abuse.
+   *
+   * Both session cookies count. The platform portal authenticates with
+   * `qman_platform_session`, and checking only the organization cookie here
+   * would have left every platform state-changing route — create an
+   * organization, suspend one, reset an administrator — protected by the Origin
+   * header alone.
+   */
+  const authenticated =
+    readCookie(request, SESSION_COOKIE) !== null ||
+    readCookie(request, PLATFORM_SESSION_COOKIE) !== null;
+  if (!authenticated) return { ok: true };
 
   const cookie = readCookie(request, CSRF_COOKIE);
   const header = request.headers[CSRF_HEADER];

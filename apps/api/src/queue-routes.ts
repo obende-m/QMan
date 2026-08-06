@@ -32,7 +32,7 @@ import type {
   VisitRepository,
 } from "@qman/persistence";
 import { admit, ticketForRoute, type AdmissionDependencies } from "./admission.js";
-import { requirePermission, type GuardDependencies } from "./authorization.js";
+import { requirePermission, tenantOf, type GuardDependencies } from "./authorization.js";
 import { describeEvent, type EventStream } from "./stream.js";
 import { toNewEvent } from "./visit-events.js";
 import type { Logger } from "./logging.js";
@@ -55,7 +55,6 @@ export interface QueueRouteDependencies {
   readonly events: EventRepository;
   readonly stream: EventStream;
   readonly logger: Logger;
-  readonly resolveHospital: (request: FastifyRequest) => string;
   /** Absent in tests that are not about retries; every deployment has it. */
   readonly idempotency?: IdempotencyDependencies;
   /** Absent in suites that only exercise queue transitions. */
@@ -187,7 +186,7 @@ async function act<TPrepared = undefined>(
   const pending = visit.pullEvents();
   const records = pending.map((event) =>
     toNewEvent(event, {
-      hospitalId: deps.resolveHospital(request),
+      hospitalId: tenantOf(request),
       sessionId: authenticated.session.id,
     }),
   );
@@ -239,7 +238,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
 
     const authenticated = request.authenticated!;
     const configuration = await deps.admission.configuration.load(
-      deps.resolveHospital(request),
+      tenantOf(request),
     );
     if (configuration === null) {
       return reply.status(500).send({ error: "Configuration unavailable." });
@@ -293,7 +292,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
       .pullEvents()
       .map((event) =>
         toNewEvent(event, {
-          hospitalId: deps.resolveHospital(request),
+          hospitalId: tenantOf(request),
           sessionId: authenticated.session.id,
         }),
       );
@@ -338,7 +337,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
     }
 
     const configuration = await deps.admission.configuration.load(
-      deps.resolveHospital(request),
+      tenantOf(request),
     );
     if (configuration === null) {
       return reply.status(500).send({ error: "Configuration unavailable." });

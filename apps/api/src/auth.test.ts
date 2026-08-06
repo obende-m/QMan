@@ -1,3 +1,4 @@
+import { ORGANIZATION_CODE, fakeOrganizations } from "./config-fixtures.js";
 /**
  * Authentication rules, end to end over the HTTP surface.
  *
@@ -118,7 +119,7 @@ function harness(accounts: FakeAccounts, sessions: FakeSessions, lines: string[]
   });
   const app = buildServer({
     auth,
-    resolveHospital: () => HOSPITAL,
+    organizations: fakeOrganizations(),
     secureCookies: true,
     allowedOrigins: [ORIGIN],
     logger: createLogger({ write: (line) => lines.push(line) }),
@@ -161,7 +162,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(response.statusCode).toBe(200);
@@ -179,7 +180,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(response.body).not.toContain("scrypt");
@@ -193,7 +194,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     const header = response.headers["set-cookie"];
@@ -210,7 +211,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     const token = decodeURIComponent(cookieFrom(response.headers["set-cookie"]).split("=")[1]!);
@@ -226,13 +227,13 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: "not the password" },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: "not the password" },
     });
     const missing = await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "nobody", password: "not the password" },
+      payload: { organization: ORGANIZATION_CODE, username: "nobody", password: "not the password" },
     });
 
     expect(wrong.statusCode).toBe(401);
@@ -265,7 +266,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "adams", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "adams", password: PASSWORD },
     });
 
     expect(response.statusCode).toBe(401);
@@ -281,7 +282,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(response.statusCode).toBe(401);
@@ -295,7 +296,7 @@ describe("sign-in", () => {
         method: "POST",
         url: "/api/v1/auth/login",
         headers: { origin: ORIGIN },
-        payload: { username: "ifeoma", password: "wrong" },
+        payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: "wrong" },
       });
     }
 
@@ -304,7 +305,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(response.statusCode).toBe(429);
@@ -318,7 +319,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "IFEOMA", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "IFEOMA", password: PASSWORD },
     });
     expect(response.statusCode).toBe(200);
   });
@@ -329,7 +330,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "", password: "" },
+      payload: { organization: ORGANIZATION_CODE, username: "", password: "" },
     });
     expect(response.statusCode).toBe(400);
     expect(sessions.rows.size).toBe(0);
@@ -347,7 +348,7 @@ describe("sign-in", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     expect(response.statusCode).toBe(200);
@@ -373,7 +374,7 @@ describe("session resolution", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     return {
       app,
@@ -499,7 +500,7 @@ describe("request identity and logging", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
 
     const entry = lines
@@ -524,13 +525,13 @@ describe("request identity and logging", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     await app.inject({
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: "wrong one" },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: "wrong one" },
     });
 
     const token = decodeURIComponent(cookieFrom(login.headers["set-cookie"]).split("=")[1]!);

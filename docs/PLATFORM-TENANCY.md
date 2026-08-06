@@ -452,20 +452,36 @@ independent authentication — is what keeps that manageable, and §8 follows it
 
 ---
 
-## 12. Open questions for review
+## 12. Decisions
 
-1. **§6.2 is the decision that most deserves scrutiny.** Re-pointing the
-   cross-tenant guard at resource ownership keeps a real control; the alternative
-   is deleting it and relying entirely on session-derived scoping. I recommend
-   keeping it. It is worth disagreeing with explicitly rather than by omission.
+Settled at review. These are binding on the implementation.
 
-2. **Organization code at login versus subdomains.** I recommend the code field
-   for V1 (§4). Subdomains are a better product experience and can be added later
-   without a schema change, but they multiply per-tenant DNS, certificate and
-   CORS-origin management immediately.
+1. **The §6.2 resource-owner guard is kept, permanently.** Session-derived
+   tenancy is not sufficient on its own. Authorization continues to validate that
+   the resource being accessed belongs to the same organization as the
+   authenticated session, so that a repository mistake — a missing hospital
+   filter — is still detected rather than silently served. This is a permanent
+   security control and not an optimisation to be removed later.
 
-3. **One platform role or a permission-backed set from the start.** I recommend
-   shipping the permission catalogue now and one role that holds all of it, so a
-   read-only support role is later a data change.
+2. **Organization codes select the tenant.** No subdomains in this release. Login
+   identifies the organization by its globally unique code. Subdomains remain
+   addable later without changing the backend architecture.
 
-Implementation begins once these are settled.
+3. **The full platform permission catalogue ships now**, completely separate from
+   organization permissions. An organization administrator must never be capable
+   of granting or obtaining a platform permission.
+
+4. **Organization identity is the immutable UUID.** The code is a login selector
+   and the display name is editable; neither is ever the tenant identifier. No
+   foreign key, scope check, audit record or query keys on anything but the UUID.
+
+### 12.1 What decision 4 constrains
+
+Decision 4 is easy to honour on the first day and easy to lose later, so the rule
+is stated concretely: `hospitals.id` is the only value that may appear as a
+tenant scope. `hospitals.code` appears in exactly two places — the login form and
+the lookup that turns it into an id — and nowhere else in the system.
+
+A consequence worth naming: the code must therefore be editable too, since it is
+not identity. Changing it changes what an organization's staff type at sign-in
+and nothing else. Nothing joins on it, so nothing breaks.

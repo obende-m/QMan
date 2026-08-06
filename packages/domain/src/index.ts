@@ -36,6 +36,9 @@ export * from "./analytics/operations.js";
 export * from "./configuration/hospital-config.js";
 export * from "./configuration/rbac.js";
 
+export * from "./platform/permissions.js";
+export * from "./platform/organization.js";
+
 export * from "./telemetry/operational-health.js";
 export * from "./telemetry/connection.js";
 export * from "./announcements/announcement.js";

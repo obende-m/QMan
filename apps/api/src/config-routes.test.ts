@@ -15,6 +15,9 @@ import type {
 } from "@qman/persistence";
 import { AuthService, createMemoryLockoutStore } from "./auth.js";
 import { hashPassword } from "./passwords.js";
+import { fakeOrganizations,
+  ORGANIZATION_CODE,
+} from "./config-fixtures.js";
 import { buildServer } from "./server.js";
 import { silentLogger } from "./logging.js";
 
@@ -134,7 +137,7 @@ describe("configuration endpoint", () => {
         now: () => new Date("2026-03-09T09:00:00Z"),
         newId: () => "session-1",
       }),
-      resolveHospital: () => HOSPITAL,
+      organizations: fakeOrganizations(),
       secureCookies: true,
       allowedOrigins: [ORIGIN],
       logger: silentLogger(),
@@ -147,7 +150,7 @@ describe("configuration endpoint", () => {
       method: "POST",
       url: "/api/v1/auth/login",
       headers: { origin: ORIGIN },
-      payload: { username: "ifeoma", password: PASSWORD },
+      payload: { organization: ORGANIZATION_CODE, username: "ifeoma", password: PASSWORD },
     });
     const set = login.headers["set-cookie"] as string[];
     return set.map((c) => c.split(";")[0]).join("; ");

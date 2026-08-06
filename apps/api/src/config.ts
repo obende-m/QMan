@@ -19,7 +19,6 @@ export interface Config {
   readonly poolSize: number;
   readonly host: string;
   readonly port: number;
-  readonly hospitalId: string;
   readonly logLevel: LogLevel;
   readonly secureCookies: boolean;
   readonly allowedOrigins: readonly string[];
@@ -83,11 +82,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     "It is the PostgreSQL connection string, for example postgres://user:password@host:5432/qman.",
   );
 
-  const hospitalId = required(
-    env,
-    "QMAN_HOSPITAL_ID",
-    "It is the id of the hospital this server serves. Every request is scoped to it.",
-  );
+  /*
+   * The single-tenant variable, refused rather than ignored.
+   *
+   * QMan now hosts many organizations and derives the tenant from the
+   * authenticated session. A deployment still carrying this variable was
+   * configured under the belief that this server serves one named hospital,
+   * and that belief is now wrong in a way that would not otherwise surface —
+   * the server would run, serve every organization, and the operator would not
+   * know. Failing at startup is the only honest response.
+   */
+  if (env["QMAN_HOSPITAL_ID"] !== undefined) {
+    throw new ConfigurationError(
+      "QMAN_HOSPITAL_ID is set, and QMan no longer uses it. The tenant is now derived " +
+        "from the authenticated session, and organizations are created through the " +
+        "Platform portal. Remove the variable from this deployment.",
+    );
+  }
 
   const level = (env["LOG_LEVEL"] ?? "info").trim().toLowerCase();
   if (!LOG_LEVELS.includes(level as LogLevel)) {
@@ -179,7 +190,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     poolSize: integer(env, "DATABASE_POOL_SIZE", 10),
     host: (env["HOST"] ?? "0.0.0.0").trim(),
     port: integer(env, "PORT", 3001),
-    hospitalId,
     logLevel: level as LogLevel,
     secureCookies,
   };
