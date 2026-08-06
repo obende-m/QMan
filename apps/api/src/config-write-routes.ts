@@ -289,7 +289,7 @@ export function registerConfigWriteRoutes(
     await applyChange(deps, request, reply, {
       precondition: async (tx) =>
         blockedBy(
-          await deps.writer.stationUsage(tx, id),
+          await deps.writer.stationUsage(tx, tenantOf(request), id),
           `stations.${id}`,
           "Disable the station instead: that stops it taking new patients and keeps the record of those it has already seen.",
         ),
@@ -297,7 +297,7 @@ export function registerConfigWriteRoutes(
         ...config,
         stations: config.stations.filter((s) => s.id !== id),
       }),
-      persist: (tx) => deps.writer.deleteStation(tx, id),
+      persist: (tx) => deps.writer.deleteStation(tx, tenantOf(request), id),
       describe: (before) => ({
         type: "config.station_updated",
         summary: `Station ${station(before, id)?.name ?? id} deleted`,
@@ -425,7 +425,7 @@ export function registerConfigWriteRoutes(
     await applyChange(deps, request, reply, {
       precondition: async (tx) =>
         blockedBy(
-          await deps.writer.workflowUsage(tx, id),
+          await deps.writer.workflowUsage(tx, tenantOf(request), id),
           `workflows.${id}`,
           "Visits already recorded against it would lose the path they were sent down.",
         ),
@@ -433,7 +433,7 @@ export function registerConfigWriteRoutes(
         ...config,
         workflows: config.workflows.filter((w) => w.id !== id),
       }),
-      persist: (tx) => deps.writer.deleteWorkflow(tx, id),
+      persist: (tx) => deps.writer.deleteWorkflow(tx, tenantOf(request), id),
       describe: (before) => ({
         type: "config.workflow_updated",
         summary: `Workflow ${find(before)?.name ?? id} deleted`,
@@ -538,7 +538,7 @@ export function registerConfigWriteRoutes(
           ...config,
           displayBoards: config.displayBoards.filter((b) => b.id !== id),
         }),
-        persist: (tx) => deps.writer.deleteBoard(tx, id),
+        persist: (tx) => deps.writer.deleteBoard(tx, tenantOf(request), id),
         describe: (before) => ({
           type: "config.display_board_updated",
           summary: `Display board ${find(before)?.name ?? id} deleted`,

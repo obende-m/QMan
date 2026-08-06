@@ -162,7 +162,8 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "No such board." });
     }
 
-    if (!(await servingPublicly(deps, board.branchId))) {
+    const organization = await deps.organizations.findByBranch(board.branchId);
+    if (organization === null || organization.status !== "active") {
       // Answered exactly as a missing board is. A screen in a waiting room
       // shows "this board is not configured" either way, and distinguishing
       // the two would publish the commercial status of a hospital to anyone
@@ -170,7 +171,12 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "No such board." });
     }
 
-    const visits = await deps.visits.activeInBranch(board.branchId as BranchId);
+    // Scoped to the organization the board belongs to, resolved from the board
+    // rather than from anything the caller sent.
+    const visits = await deps.visits.activeInBranch(
+      organization.id,
+      board.branchId as BranchId,
+    );
     const stations = new Set(board.stationIds);
 
     const entries = visits

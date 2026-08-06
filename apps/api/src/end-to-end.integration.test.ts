@@ -515,8 +515,8 @@ suite("QMan end to end, against real PostgreSQL", () => {
         })
       ).json().configuration;
 
-      expect(a.hospital.id).toBe(alpha.id);
-      expect(b.hospital.id).toBe(beta.id);
+      expect(a.profile.id).toBe(alpha.id);
+      expect(b.profile.id).toBe(beta.id);
       expect(a.branches[0].id).not.toBe(b.branches[0].id);
       // No station, workflow or board is shared, even though both were built
       // from the same template with the same names and codes.
@@ -606,13 +606,175 @@ suite("QMan end to end, against real PostgreSQL", () => {
       expect(after.stations).toHaveLength(before.stations.length);
     }, 60_000);
 
+    /**
+     * The penetration suite.
+     *
+     * Alpha's session, Beta's identifiers, every tenant-owned resource type.
+     * Each of these described a working attack before the release audit: reads
+     * returned Beta's patients by name, the six visit transitions were
+     * reachable across organizations whenever the caller's session was not
+     * pinned to a branch, an unfiltered event query returned every
+     * organization's history, and DELETE by raw id destroyed another
+     * organization's configuration.
+     *
+     * They are refused now because the repository signatures require the
+     * tenant, so the filter is in the SQL rather than in a check a route author
+     * has to remember.
+     */
+    describe("penetration: Alpha's session against Beta's identifiers", () => {
+      it("cannot read Beta's visits by branch id", async () => {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/branches/${beta.branchId}/visits`,
+          headers: { cookie: alpha.admin.cookie },
+        });
+        expect(response.payload).not.toContain("Beta Patient");
+        expect(response.json().visits).toEqual([]);
+      }, 60_000);
+
+      it("cannot read Beta's queue by station id", async () => {
+        const response = await app.inject({
+          method: "GET",
+          url: `/api/v1/stations/${beta.stations["REC"]}/queue`,
+          headers: { cookie: alpha.admin.cookie },
+        });
+        expect(response.payload).not.toContain("Beta Patient");
+        expect(response.json().visits).toEqual([]);
+      }, 60_000);
+
+      it("cannot read Beta's events, filtered or unfiltered", async () => {
+        const filtered = await app.inject({
+          method: "GET",
+          url: `/api/v1/events?branchId=${beta.branchId}`,
+          headers: { cookie: alpha.admin.cookie },
+        });
+        expect(filtered.json().events).toEqual([]);
+
+        // The unfiltered query is the dangerous one: it used to return every
+        // organization's history, summaries and Journey Codes included.
+        const unfiltered = await app.inject({
+          method: "GET",
+          url: "/api/v1/events",
+          headers: { cookie: alpha.admin.cookie },
+        });
+        expect(unfiltered.payload).not.toContain("Beta Patient");
+        const branches = new Set(
+          (unfiltered.json().events as Array<{ branchId: string | null }>).map(
+            (event) => event.branchId,
+          ),
+        );
+        expect(branches.has(beta.branchId)).toBe(false);
+      }, 60_000);
+
+      it("cannot act on Beta's visit by id", async () => {
+        const betaVisits = await app.inject({
+          method: "GET",
+          url: `/api/v1/branches/${beta.branchId}/visits`,
+          headers: { cookie: beta.admin.cookie },
+        });
+        const victim = (betaVisits.json().visits as Array<{ state: { id: string } }>)[0]!;
+
+        // All six transitions, from Alpha's session. Each must be answered as
+        // though the visit does not exist.
+        for (const step of ["call", "start", "complete", "skip", "recall", "cancel"]) {
+          const response = await app.inject({
+            method: "POST",
+            url: `/api/v1/visits/${victim.state.id}/${step}`,
+            headers: writing(alpha.admin),
+            payload: {},
+          });
+          expect(response.statusCode).toBe(404);
+        }
+
+        // And Beta's visit is untouched.
+        const after = await app.inject({
+          method: "GET",
+          url: `/api/v1/branches/${beta.branchId}/visits`,
+          headers: { cookie: beta.admin.cookie },
+        });
+        expect(after.json().visits).toHaveLength(
+          (betaVisits.json().visits as unknown[]).length,
+        );
+      }, 120_000);
+
+      it("cannot route Beta's visit to one of its stations", async () => {
+        const betaVisits = await app.inject({
+          method: "GET",
+          url: `/api/v1/branches/${beta.branchId}/visits`,
+          headers: { cookie: beta.admin.cookie },
+        });
+        const victim = (betaVisits.json().visits as Array<{ state: { id: string } }>)[0]!;
+
+        const response = await app.inject({
+          method: "POST",
+          url: `/api/v1/visits/${victim.state.id}/route`,
+          headers: writing(alpha.admin),
+          payload: { stationId: beta.stations["CON"] },
+        });
+        expect(response.statusCode).toBe(404);
+      }, 60_000);
+
+      it("cannot delete Beta's station, workflow or board", async () => {
+        const before = (
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/config",
+            headers: { cookie: beta.admin.cookie },
+          })
+        ).json().configuration;
+
+        for (const [collection, id] of [
+          ["stations", beta.stations["CON"]!],
+          ["workflows", before.workflows[0].id as string],
+          ["display-boards", beta.boardId],
+        ] as const) {
+          await app.inject({
+            method: "DELETE",
+            url: `/api/v1/${collection}/${id}`,
+            headers: writing(alpha.admin),
+          });
+        }
+
+        // Whatever each request answered, Beta's configuration is intact. This
+        // is the assertion that matters: the DELETE used to match by raw id.
+        const after = (
+          await app.inject({
+            method: "GET",
+            url: "/api/v1/config",
+            headers: { cookie: beta.admin.cookie },
+          })
+        ).json().configuration;
+
+        expect(after.stations).toHaveLength(before.stations.length);
+        expect(after.workflows).toHaveLength(before.workflows.length);
+        expect(after.displayBoards).toHaveLength(before.displayBoards.length);
+      }, 120_000);
+
+      it("cannot enumerate Beta's existence through a station usage probe", async () => {
+        // A delete refused for "3 workflows use this station" would confirm the
+        // station is real and busy. Beta's station must look like nothing.
+        const response = await app.inject({
+          method: "DELETE",
+          url: `/api/v1/stations/${beta.stations["REC"]}`,
+          headers: writing(alpha.admin),
+        });
+
+        // The refusal must not describe what uses Beta's station. A message
+        // naming "3 workflows" would confirm the station is real and busy.
+        const problems = JSON.stringify(response.json().problems ?? []);
+        expect(problems).not.toContain("workflow");
+        expect(problems).not.toContain("visit");
+      }, 60_000);
+    });
+
     it("suspends one organization without touching the other", async () => {
-      await app.inject({
+      const suspended = await app.inject({
         method: "POST",
         url: `/api/v1/platform/organizations/${beta.id}/suspend`,
         headers: writing(platform),
         payload: { reason: "Validation run" },
       });
+      expect(suspended.statusCode).toBe(200);
 
       const refused = await app.inject({
         method: "POST",

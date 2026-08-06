@@ -626,7 +626,7 @@ suite("persistence against real PostgreSQL", () => {
      * the stage written above.
      */
     it("counts what refers to a station", async () => {
-      const usage = await db.transaction((tx) => writer.stationUsage(tx, CREATED_STATION));
+      const usage = await db.transaction((tx) => writer.stationUsage(tx, HOSPITAL, CREATED_STATION));
       expect(usage.find((u) => u.singular === "workflow stage")?.count).toBe(1);
     });
 
@@ -652,8 +652,8 @@ suite("persistence against real PostgreSQL", () => {
         ),
       );
 
-      expect(await db.transaction((tx) => writer.stationUsage(tx, spare))).toEqual([]);
-      await db.transaction((tx) => writer.deleteStation(tx, spare));
+      expect(await db.transaction((tx) => writer.stationUsage(tx, HOSPITAL, spare))).toEqual([]);
+      await db.transaction((tx) => writer.deleteStation(tx, HOSPITAL, spare));
 
       const stations = (await new PostgresConfigurationRepository(db).load(HOSPITAL))!.stations;
       expect(stations.map((s) => s.id)).not.toContain(spare);
@@ -665,7 +665,7 @@ suite("persistence against real PostgreSQL", () => {
      * cascade in this area that is deliberate.
      */
     it("deletes a workflow and its stages together", async () => {
-      await db.transaction((tx) => writer.deleteWorkflow(tx, CREATED_WORKFLOW));
+      await db.transaction((tx) => writer.deleteWorkflow(tx, HOSPITAL, CREATED_WORKFLOW));
 
       const configuration = await new PostgresConfigurationRepository(db).load(HOSPITAL);
       expect(configuration!.workflows.map((w) => w.id)).not.toContain(CREATED_WORKFLOW);

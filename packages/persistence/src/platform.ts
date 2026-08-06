@@ -472,11 +472,21 @@ export class PostgresOrganizationDirectory implements OrganizationDirectoryRepos
     at: Date,
   ): Promise<void> {
     await this.db.query(
+      /*
+       * The casts are load-bearing, not decoration.
+       *
+       * A bare `$4` inside `CASE WHEN … THEN $4 ELSE NULL END` gives PostgreSQL
+       * nothing to infer a type from — both arms are unknown — so it settles on
+       * text and the assignment to a timestamptz column fails. Suspension and
+       * reactivation returned 500 for this reason and nothing caught it,
+       * because every unit test used an in-memory directory and the inference
+       * only happens in the server.
+       */
       `UPDATE hospitals
-       SET status = $2,
-           suspended_at = CASE WHEN $2 = 'suspended' THEN $4 ELSE NULL END,
-           suspended_reason = CASE WHEN $2 = 'suspended' THEN $3 ELSE NULL END,
-           updated_at = $4
+       SET status = $2::text,
+           suspended_at = CASE WHEN $2::text = 'suspended' THEN $4::timestamptz ELSE NULL END,
+           suspended_reason = CASE WHEN $2::text = 'suspended' THEN $3::text ELSE NULL END,
+           updated_at = $4::timestamptz
        WHERE id = $1`,
       [id, status, reason, at],
     );

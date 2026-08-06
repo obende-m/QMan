@@ -26,6 +26,8 @@ class Ids implements IdGenerator {
   }
 }
 
+/** The tenant every scoped repository read now requires. */
+const HOSPITAL = "hospital-1";
 const BRANCH = BranchId("branch-1");
 const CONSULT = StationId("st-consultation");
 const LAB = StationId("st-laboratory");
@@ -172,7 +174,7 @@ describe("visit repository", () => {
     ]);
     db.willReturn([]);
 
-    const visits = await repo.activeInBranch(BRANCH);
+    const visits = await repo.activeInBranch(HOSPITAL, BRANCH);
 
     expect(visits).toHaveLength(2);
     const entryQueries = db.matching("from queue_entries");
@@ -206,7 +208,7 @@ describe("visit repository", () => {
   it("finds visits open at a station by their queue entry status", async () => {
     const deps = { clock: new FixedClock(), ids: new Ids() };
     db.willReturn([]);
-    await new PostgresVisitRepository(db, deps).openAtStation(CONSULT);
+    await new PostgresVisitRepository(db, deps).openAtStation(HOSPITAL, CONSULT);
 
     const sql = db.statements[0]!.sql.toLowerCase();
     expect(sql).toContain("join queue_entries");
@@ -225,7 +227,7 @@ describe("event repository", () => {
 
   it("returns newest first and caps the page size", async () => {
     db.willReturn([]);
-    await repo.query({ limit: 5000 });
+    await repo.query(HOSPITAL, { limit: 5000 });
 
     const sql = db.statements[0]!.sql.toLowerCase();
     expect(sql).toContain("order by sequence desc");
@@ -235,10 +237,10 @@ describe("event repository", () => {
 
   it("separates the audit log from the activity timeline by category", async () => {
     db.willReturn([]);
-    await repo.query({ categories: ["administrative", "security"] });
+    await repo.query(HOSPITAL, { categories: ["administrative", "security"] });
 
-    expect(db.statements[0]!.sql).toContain("category = ANY($1)");
-    expect(db.statements[0]!.params[0]).toEqual([
+    expect(db.statements[0]!.sql).toContain("category = ANY($2)");
+    expect(db.statements[0]!.params[1]).toEqual([
       "administrative",
       "security",
     ]);
@@ -246,17 +248,19 @@ describe("event repository", () => {
 
   it("combines filters with AND", async () => {
     db.willReturn([]);
-    await repo.query({
+    await repo.query(HOSPITAL, {
       visitId: "visit-1",
       actorId: UserId("user-doctor"),
       from: new Date("2026-03-09T00:00:00Z"),
     });
 
     const sql = db.statements[0]!.sql;
-    expect(sql).toContain("visit_id = $1");
-    expect(sql).toContain("actor_id = $2");
-    expect(sql).toContain("occurred_at >= $3");
-    expect(sql.match(/ AND /g)).toHaveLength(2);
+    expect(sql).toContain("visit_id = $2");
+    expect(sql).toContain("actor_id = $3");
+    expect(sql).toContain("occurred_at >= $4");
+    // Three, not two: the unconditional hospital scope joins the two filters
+    // this test supplies.
+    expect(sql.match(/ AND /g)).toHaveLength(3);
   });
 
   /**
@@ -265,23 +269,33 @@ describe("event repository", () => {
    */
   it("parameterises a search term rather than interpolating it", async () => {
     db.willReturn([]);
-    await repo.query({ search: "'; DROP TABLE visits; --" });
+    await repo.query(HOSPITAL, { search: "'; DROP TABLE visits; --" });
 
     const [statement] = db.statements;
     expect(statement!.sql).not.toContain("DROP TABLE");
-    expect(statement!.sql).toContain("plainto_tsquery('simple', $1)");
-    expect(statement!.params[0]).toBe("'; DROP TABLE visits; --");
+    expect(statement!.sql).toContain("plainto_tsquery('simple', $2)");
+    expect(statement!.params[1]).toBe("'; DROP TABLE visits; --");
   });
 
-  it("issues no WHERE clause when nothing is filtered", async () => {
+  /**
+   * The inverse of what this used to assert.
+   *
+   * It previously required *no* WHERE clause on an unfiltered query, which is
+   * precisely the bug the release audit found: an unfiltered read returned
+   * every organization's events. The tenant filter is unconditional now, so an
+   * unfiltered query is scoped and nothing else.
+   */
+  it("always scopes to one hospital, even when nothing else is filtered", async () => {
     db.willReturn([]);
-    await repo.query({});
-    expect(db.statements[0]!.sql.toLowerCase()).not.toContain("where");
+    await repo.query(HOSPITAL, {});
+    const statement = db.statements[0]!;
+    expect(statement.sql.toLowerCase()).toContain("where hospital_id = $1");
+    expect(statement.params[0]).toBe(HOSPITAL);
   });
 
   it("returns a visit's history oldest first, so it reads as a story", async () => {
     db.willReturn([]);
-    await repo.forVisit(VisitId("visit-1"));
+    await repo.forVisit(HOSPITAL, VisitId("visit-1"));
     expect(db.statements[0]!.sql.toLowerCase()).toContain(
       "order by sequence asc",
     );

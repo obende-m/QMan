@@ -152,13 +152,30 @@ async function act<TPrepared = undefined>(
     void reply.status(status).send(payload);
   };
 
-  const visit = await deps.visits.find(VisitId(id));
+  /*
+   * Loaded within the caller's organization, which is the ownership check.
+   *
+   * The branch comparison below used to be the only tenant check here, and it
+   * was skipped entirely when `session.branchId` was null — which is every
+   * administrator whose account is not pinned to one branch, including the one
+   * every new organization starts with. That made all six visit transitions
+   * reachable across organizations, and recorded the resulting event under the
+   * caller's hospital id. The repository now refuses to return another
+   * organization's visit at all, so the hole cannot be reopened by editing this
+   * function.
+   */
+  const visit = await deps.visits.find(tenantOf(request), VisitId(id));
 
   if (visit === null) {
+    // The same answer for "does not exist" and "belongs to someone else".
+    // Distinguishing them tells a caller probing identifiers which ones are
+    // real elsewhere.
     await respond(404, { error: "No such visit." });
     return;
   }
 
+  // A narrowing within the organization, not the tenant boundary: staff pinned
+  // to one branch do not act on another branch's patients.
   if (visit.branchId !== authenticated.session.branchId && authenticated.session.branchId !== null) {
     await respond(403, { error: "That visit is in another branch." });
     return;
@@ -367,13 +384,13 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
 
   app.get(`${V1}/stations/:stationId/queue`, guarded("queue.call"), async (request, reply) => {
     const { stationId } = request.params as { stationId: string };
-    const visits = await deps.visits.openAtStation(StationId(stationId));
+    const visits = await deps.visits.openAtStation(tenantOf(request), StationId(stationId));
     return reply.status(200).send({ visits: visits.map(describeVisit) });
   });
 
   app.get(`${V1}/branches/:branchId/visits`, guarded("reports.view"), async (request, reply) => {
     const { branchId } = request.params as { branchId: string };
-    const visits = await deps.visits.activeInBranch(BranchId(branchId));
+    const visits = await deps.visits.activeInBranch(tenantOf(request), BranchId(branchId));
     return reply.status(200).send({ visits: visits.map(describeVisit) });
   });
 
@@ -421,7 +438,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
 
   app.get(`${V1}/events`, guarded("reports.view"), async (request, reply) => {
     const query = request.query as Record<string, string | undefined>;
-    const records = await deps.events.query({
+    const records = await deps.events.query(tenantOf(request), {
       ...(query["branchId"] ? { branchId: BranchId(query["branchId"]) } : {}),
       ...(query["correlationId"] ? { correlationId: query["correlationId"] } : {}),
       ...(query["limit"] ? { limit: Number(query["limit"]) } : {}),
