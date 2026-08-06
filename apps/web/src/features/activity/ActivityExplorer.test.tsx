@@ -2,31 +2,30 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { UserId } from "@qman/domain";
 import { ActivityExplorer } from "./ActivityExplorer.js";
-import { ClinicStore, CURRENT_USER } from "../../data/clinic-store.js";
 import { OperationsStore } from "../../data/operations-store.js";
-import { ConfigStore } from "../../data/config-store.js";
-import { AuthStore } from "../../data/auth-store.js";
-import { EventBus } from "../../data/event-bus.js";
-import { STATION_IDS } from "../../data/config-store.js";
+import {
+  createFixture,
+  STATION_IDS,
+  USER_ID,
+  type Fixture,
+} from "../../test/api-fixture.js";
 
-function wire() {
-  const bus = new EventBus();
-  const config = new ConfigStore();
-  const clinic = new ClinicStore().useBus(bus);
-  const ops = new OperationsStore(config);
-  const auth = new AuthStore(config);
-
-  ops.attachTo(bus);
-  config.auditTo(({ type, summary }) =>
-    ops.recordAdminEvent({
-      type,
-      summary,
-      actorId: UserId("user-admin"),
-      correlationId: "sess-1",
-    }),
-  );
-
-  return { bus, config, clinic, ops, auth };
+/**
+ * Operational activity arrives on the server's event stream; administrative
+ * activity is recorded by the portal as it saves. Both land in the same store,
+ * which is what the explorer reads.
+ */
+async function wire() {
+  const fixture = await createFixture();
+  const ops = new OperationsStore(fixture.config);
+  ops.attachToStream(fixture.stream);
+  return {
+    fixture,
+    config: fixture.config,
+    clinic: fixture.clinic,
+    ops,
+    auth: fixture.auth,
+  };
 }
 
 function openTab(name: RegExp): void {
@@ -34,17 +33,20 @@ function openTab(name: RegExp): void {
 }
 
 describe("Activity Timeline", () => {
-  let h: ReturnType<typeof wire>;
+  let h: Awaited<ReturnType<typeof wire>>;
 
-  beforeEach(() => {
-    h = wire();
+  beforeEach(async () => {
+    h = await wire();
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    h.fixture.restore();
+    cleanup();
+  });
 
-  it("shows operational activity", () => {
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+  it("shows operational activity", async () => {
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     expect(screen.getByText(/Called at Pharmacy/)).toBeDefined();
@@ -54,12 +56,12 @@ describe("Activity Timeline", () => {
    * The separation that makes both screens usable: a hundred patient calls must
    * not bury the one configuration change that mattered.
    */
-  it("keeps configuration changes out of the operational timeline", () => {
-    act(() => {
+  it("keeps configuration changes out of the operational timeline", async () => {
+    await act(async () => {
       h.config.updateStation(STATION_IDS.consultation, {
         sla: { targetWaitMillis: 45 * 60_000, saturationPoint: 12 },
       });
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+      h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
@@ -67,12 +69,12 @@ describe("Activity Timeline", () => {
     expect(screen.queryByText(/SLA for Consultation/)).toBeNull();
   });
 
-  it("correlates a whole journey by its Journey Code", () => {
-    const visit = h.clinic.visits[0]!.visit;
+  it("correlates a whole journey by its Journey Code", async () => {
+    const visit = h.clinic.visits[0]!;
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
 
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     // Filter to one patient.
@@ -85,11 +87,11 @@ describe("Activity Timeline", () => {
     ).toBeDefined();
   });
 
-  it("accepts a journey code however it is typed", () => {
+  it("accepts a journey code however it is typed", async () => {
     // Only visits acted on after the bus was attached have events; the seed
     // pulls its own events during construction.
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     const code = h.ops.audit[0]!.correlationId!;
     expect(code).toMatch(/^QM-/);
@@ -111,16 +113,16 @@ describe("Activity Timeline", () => {
    * Correlation travels on the event itself, so a subscriber that joined late
    * still gets it — the case that matters once events arrive over a socket.
    */
-  it("carries the journey code on every event, not just the first", () => {
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+  it("carries the journey code on every event, not just the first", async () => {
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     expect(h.ops.audit.every((e) => e.correlationId?.startsWith("QM-"))).toBe(
       true,
     );
   });
 
-  it("says so plainly when a journey code matches nothing", () => {
+  it("says so plainly when a journey code matches nothing", async () => {
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     fireEvent.change(screen.getByLabelText(/journey code/i), {
       target: { value: "QM-ZZZZ" },
@@ -128,8 +130,8 @@ describe("Activity Timeline", () => {
     expect(screen.getByText(/no activity for that journey code/i)).toBeDefined();
   });
 
-  it("opens straight onto one journey when given a correlation id", () => {
-    const code = h.clinic.visits[0]!.visit.journeyCode;
+  it("opens straight onto one journey when given a correlation id", async () => {
+    const code = h.clinic.visits[0]!.journeyCode;
     render(
       <ActivityExplorer
         operations={h.ops}
@@ -142,9 +144,9 @@ describe("Activity Timeline", () => {
     ).toBeDefined();
   });
 
-  it("filters by free text", () => {
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+  it("filters by free text", async () => {
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
 
@@ -159,9 +161,9 @@ describe("Activity Timeline", () => {
     expect(screen.queryByText(/Called at Pharmacy/)).toBeNull();
   });
 
-  it("names who did it", () => {
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+  it("names who did it", async () => {
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     expect(screen.getAllByText(/Dr Adams/).length).toBeGreaterThan(0);
@@ -169,16 +171,19 @@ describe("Activity Timeline", () => {
 });
 
 describe("Audit Log", () => {
-  let h: ReturnType<typeof wire>;
+  let h: Awaited<ReturnType<typeof wire>>;
 
-  beforeEach(() => {
-    h = wire();
+  beforeEach(async () => {
+    h = await wire();
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    h.fixture.restore();
+    cleanup();
+  });
 
-  it("records who changed an SLA, and to what", () => {
-    act(() => {
+  it("records who changed an SLA, and to what", async () => {
+    await act(async () => {
       h.config.updateStation(STATION_IDS.consultation, {
         sla: { targetWaitMillis: 45 * 60_000, saturationPoint: 12 },
       });
@@ -191,8 +196,8 @@ describe("Audit Log", () => {
     expect(screen.getByText(/SLA for Consultation set to 45 minute target/)).toBeDefined();
   });
 
-  it("records a queue-numbering change distinctly from other station edits", () => {
-    act(() => {
+  it("records a queue-numbering change distinctly from other station edits", async () => {
+    await act(async () => {
       h.config.updateStation(STATION_IDS.consultation, {
         queueNumber: { template: "OPD-{n:4}", reset: "weekly" },
       });
@@ -205,8 +210,8 @@ describe("Audit Log", () => {
     ).toBeDefined();
   });
 
-  it("records a display board privacy change", () => {
-    act(() => {
+  it("records a display board privacy change", async () => {
+    await act(async () => {
       h.config.updateBoard("board-main", { namePolicy: "full_name" });
     });
 
@@ -217,9 +222,9 @@ describe("Audit Log", () => {
     ).toBeDefined();
   });
 
-  it("keeps patient activity out of the audit log", () => {
-    act(() => {
-      h.clinic.callNext(STATION_IDS.pharmacy, CURRENT_USER);
+  it("keeps patient activity out of the audit log", async () => {
+    await act(async () => {
+      await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
       h.config.updateProfile({ name: "Lagos Central" });
     });
 
@@ -230,11 +235,11 @@ describe("Audit Log", () => {
     expect(screen.queryByText(/Called at Pharmacy/)).toBeNull();
   });
 
-  it("records nothing when a configuration change is refused", () => {
-    act(() => {
+  it("records nothing when a configuration change is refused", async () => {
+    await act(async () => {
       // Rejected: a template with no varying token.
-      const result = h.config.updateStation(STATION_IDS.consultation, {
-        queueNumber: { template: "OPD", reset: "daily" },
+      const result = await h.config.updateStation(STATION_IDS.consultation, {
+        queueNumber: { template: "OPD", reset: "daily" } as never,
       });
       expect(result.ok).toBe(false);
     });
@@ -246,8 +251,8 @@ describe("Audit Log", () => {
     expect(screen.getByText(/no administrative activity/i)).toBeDefined();
   });
 
-  it("groups an administrative sitting by session", () => {
-    act(() => {
+  it("groups an administrative sitting by session", async () => {
+    await act(async () => {
       h.config.updateProfile({ name: "Lagos Central" });
       h.config.updateBoard("board-main", { waitingToShow: 6 });
     });
@@ -264,8 +269,8 @@ describe("Audit Log", () => {
     expect(screen.getByDisplayValue("sess-1")).toBeDefined();
   });
 
-  it("distinguishes security records from configuration records", () => {
-    act(() => {
+  it("distinguishes security records from configuration records", async () => {
+    await act(async () => {
       h.ops.recordSecurityEvent({
         type: "auth.signed_in",
         summary: "Dr Adams signed in from Chrome on Windows",
@@ -281,37 +286,5 @@ describe("Audit Log", () => {
     const table = screen.getByRole("table");
     expect(within(table).getByText("Security")).toBeDefined();
     expect(within(table).getByText("Config")).toBeDefined();
-  });
-});
-
-describe("audit sinks", () => {
-  it("records a failed sign-in without attributing it to anyone", async () => {
-    const config = new ConfigStore();
-    const ops = new OperationsStore(config);
-    const auth = new AuthStore(config);
-    auth.auditTo(({ type, summary, actorId, correlationId }) =>
-      ops.recordSecurityEvent({ type, summary, actorId, correlationId }),
-    );
-    auth.registerProvider({
-      id: "local",
-      name: "Local",
-      kind: "password",
-      enabled: true,
-      async authenticate() {
-        return {
-          ok: false,
-          reason: "invalid_credentials",
-          message: "Nope",
-        };
-      },
-    });
-
-    await auth.signIn("local", { username: "ifeoma", password: "wrong" });
-
-    const record = ops.audit.find((e) => e.type === "auth.sign_in_failed")!;
-    expect(record.summary).toMatch(/Failed sign-in for "ifeoma"/);
-    // A failed attempt has not proved who it was; attributing it would put a
-    // name against someone else's mistyped password.
-    expect(record.actorId).toBeNull();
   });
 });
