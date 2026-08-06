@@ -18,6 +18,7 @@ import { AuthStore } from "./auth-store.js";
 import { ClinicStore } from "./clinic-store.js";
 import { ConfigStore } from "./config-store.js";
 import { ConfigurationApi } from "./configuration-api.js";
+import { operationsStore } from "./operations-store.js";
 import { VisitsApi } from "./visits-api.js";
 
 /**
@@ -55,6 +56,11 @@ export function createStores(baseUrl: string = API_BASE_URL): Stores {
   stream.onEvent(() => {
     void clinic.invalidate();
   });
+
+  // Operational telemetry — audit trail, announcements, staff presence — reads
+  // the same stream. One translation, in the store, so nothing downstream
+  // knows the transport changed.
+  operationsStore.attachToStream(stream);
 
   return { auth, config, clinic, stream };
 }

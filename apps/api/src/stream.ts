@@ -98,6 +98,7 @@ export function describeEvent(record: EventRecord): PublishedEvent {
       at: record.occurredAt.toISOString(),
       branchId: record.branchId,
       visitId: record.visitId,
+      actorId: record.actorId,
       correlationId: record.correlationId,
       stationId: (record.payload["stationId"] as string | undefined) ?? null,
       queueLabel: (record.payload["queueLabel"] as string | undefined) ?? null,

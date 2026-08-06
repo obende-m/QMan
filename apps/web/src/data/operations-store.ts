@@ -29,6 +29,18 @@ import { stores } from "./runtime-stores.js";
 import { stationName, stationRoom } from "./clinic-projections.js";
 import type { EventBus, EventSubscriber } from "./event-bus.js";
 
+/** The slice of a stream event this store reads. */
+export interface StreamEventLike {
+  readonly type: string;
+  readonly at: string;
+  readonly visitId: string | null;
+  readonly actorId: string | null;
+  readonly correlationId: string | null;
+  readonly stationId: string | null;
+  readonly queueLabel: string | null;
+  readonly summary: string;
+}
+
 /**
  * Operational telemetry for QMan itself.
  *
@@ -259,6 +271,55 @@ export class OperationsStore {
    * cannot take out the others — a broken announcement must not stop the audit
    * trail recording that the patient was called.
    */
+  /**
+   * Feeds the store from the server's event stream.
+   *
+   * The browser no longer produces domain events — the server does, and what
+   * arrives is the staff projection: type, time, station, ticket, actor and a
+   * summary already rendered at write time.
+   *
+   * That projection is enough for everything here except one thing, and the
+   * difference is deliberate. The audit trail records what the server said
+   * rather than re-deriving it, which is the point of rendering the summary
+   * once. Announcements need the ticket and the station, both present.
+   * Presence needs the actor, which the staff projection carries.
+   *
+   * There is one translation, here, and nothing downstream knows the transport
+   * changed.
+   */
+  attachToStream(stream: {
+    onEvent: (listener: (event: StreamEventLike) => void) => () => void;
+  }): () => void {
+    return stream.onEvent((event) => {
+      const at = new Date(event.at);
+
+      this.#log({
+        category: "operational",
+        type: event.type,
+        summary: event.summary,
+        actorId: (event.actorId as UserId | null) ?? null,
+        visitId: event.visitId,
+        correlationId: event.correlationId,
+        occurredAt: at,
+      });
+
+      if (event.actorId !== null && event.stationId !== null) {
+        this.recordActivity(event.actorId as UserId, event.stationId as StationId, at);
+      }
+
+      if (event.type === "visit.called" && event.queueLabel !== null) {
+        this.#record({
+          id: event.correlationId ?? `${event.type}-${event.at}`,
+          event: "called",
+          stationId: (event.stationId ?? "") as StationId,
+          text: event.summary,
+          occurredAt: at,
+          spoken: false,
+        });
+      }
+    });
+  }
+
   attachTo(bus: EventBus): () => void {
     const unsubscribes = [
       bus.subscribe(this.#auditSubscriber()),
