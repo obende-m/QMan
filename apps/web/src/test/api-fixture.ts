@@ -305,7 +305,15 @@ export function defaultVisits(now = new Date()): Visit[] {
       { name: "Amara Okafor", hospitalNumber: "HN-4471", path: [STATION_IDS.consultation], state: "in_progress", arrivedMinutesAgo: 45 },
       now,
     ),
-    buildVisit({ name: "Tunde Bello", path: [STATION_IDS.consultation], arrivedMinutesAgo: 30 }, now),
+    /*
+     * Queued at Vitals, which is stage 2 of the workflow. Consultation is
+     * stage 3 and required, so this patient has a road ahead — which is what a
+     * journey timeline is for. A patient queued at Consultation has only
+     * optional stages left, and `journeySteps` lists no optional stage as
+     * upcoming: telling someone they will be sent to the laboratory when they
+     * may not be is worse than telling them nothing.
+     */
+    buildVisit({ name: "Tunde Bello", path: [STATION_IDS.vitals], arrivedMinutesAgo: 30 }, now),
     buildVisit({ name: "Ngozi Eze", path: [STATION_IDS.consultation], arrivedMinutesAgo: 18, priority: "high" }, now),
     buildVisit({ name: "Chidi Obi", path: [STATION_IDS.laboratory], arrivedMinutesAgo: 25 }, now),
     buildVisit({ name: "Fatima Yusuf", path: [STATION_IDS.laboratory], state: "called", arrivedMinutesAgo: 12 }, now),
