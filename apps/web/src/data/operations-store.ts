@@ -6,6 +6,7 @@ import {
   channelHealth,
   matchesQuery,
   renderAnnouncement,
+  type JourneyCode,
   unhealthyDevices,
   unstaffedStations,
   type ActivityCategory,
@@ -308,11 +309,26 @@ export class OperationsStore {
       }
 
       if (event.type === "visit.called" && event.queueLabel !== null) {
+        const stationId = (event.stationId ?? "") as StationId;
         this.#record({
-          id: event.correlationId ?? `${event.type}-${event.at}`,
+          id: `ann-${(this.#sequence += 1)}`,
           event: "called",
-          stationId: (event.stationId ?? "") as StationId,
-          text: event.summary,
+          stationId,
+          // Rendered from the hospital's own announcement template, not from
+          // the audit summary: the two say different things to different
+          // audiences, and a waiting room hears this one.
+          text: renderAnnouncement(this.#announcementConfig, "called", {
+            ticket: event.queueLabel,
+            journeyCode: (event.correlationId ?? "") as JourneyCode,
+            // The wire carries no patient name, by design. The template's
+            // {name} token therefore renders empty here whatever the policy
+            // says, which is the safe direction for something spoken aloud.
+            patientName: "",
+            stationName: stationName(this.config.config, stationId),
+            room: stationRoom(this.config.config, stationId),
+            hospitalName: this.config.config.profile.name,
+            namePolicy: "ticket_only",
+          }),
           occurredAt: at,
           spoken: false,
         });

@@ -36,6 +36,7 @@ import {
 import type { AuthStore } from "../data/auth-store.js";
 import type { ClinicStore } from "../data/clinic-store.js";
 import type { ConfigStore } from "../data/config-store.js";
+import type { StreamEventLike } from "../data/operations-store.js";
 import { stores } from "../data/runtime-stores.js";
 
 export const HOSPITAL_ID = "11111111-1111-1111-1111-111111111111";
@@ -306,7 +307,20 @@ export interface FixtureOptions {
   readonly signedIn?: boolean;
 }
 
+/**
+ * The server's event stream, as the fixture serves it.
+ *
+ * A successful action publishes here exactly as the API does, so a suite
+ * asserting that calling a patient produced an announcement drives the same
+ * path production does — action, server, stream, OperationsStore — rather than
+ * publishing a browser event nothing produces any more.
+ */
+export interface FixtureStream {
+  onEvent(listener: (event: StreamEventLike) => void): () => void;
+}
+
 export interface Fixture {
+  readonly stream: FixtureStream;
   readonly config: ConfigStore;
   readonly clinic: ClinicStore;
   readonly auth: AuthStore;
@@ -331,6 +345,29 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   let current = configuration;
   const requests: Array<{ method: string; url: string; body: unknown }> = [];
   const originalFetch = globalThis.fetch;
+  const streamListeners = new Set<(event: StreamEventLike) => void>();
+  const stream: FixtureStream = {
+    onEvent: (listener) => {
+      streamListeners.add(listener);
+      return () => streamListeners.delete(listener);
+    },
+  };
+
+  /** Mirrors `describeEvent`: what the staff projection carries. */
+  const publish = (visit: Visit, type: string, stationId: StationId | null): void => {
+    const entry = visit.currentEntry;
+    const event: StreamEventLike = {
+      type,
+      at: new Date().toISOString(),
+      visitId: visit.id,
+      actorId: USER_ID,
+      correlationId: visit.journeyCode,
+      stationId: stationId ?? entry?.stationId ?? null,
+      queueLabel: entry?.queueLabel ?? null,
+      summary: summaryFor(type, visit, current, stationId),
+    };
+    for (const listener of [...streamListeners]) listener(event);
+  };
 
   const respond = (status: number, body: unknown): Response =>
     ({
@@ -402,7 +439,14 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
         });
       }
 
-      visit.pullEvents();
+      const events = visit.pullEvents();
+      for (const domainEvent of events) {
+        publish(
+          visit,
+          domainEvent.type,
+          (domainEvent.payload as { stationId?: StationId }).stationId ?? null,
+        );
+      }
       return respond(200, { visit: { state: visitToWire(visit) } });
     }
 
@@ -470,6 +514,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   await clinic.load(BRANCH_ID);
 
   return {
+    stream,
     config,
     clinic,
     auth,
@@ -504,6 +549,43 @@ function applyRoleWrite(
   }
   if (method === "DELETE") return roles.filter((role) => role.id !== id);
   return roles.map((role) => (role.id === id ? { ...role, ...patch } : role));
+}
+
+/**
+ * The summary the server renders at write time.
+ *
+ * Kept in step with `visit-events.ts` on the API side; a suite reading the
+ * audit trail is reading what the server said, not something re-derived here.
+ */
+function summaryFor(
+  type: string,
+  visit: Visit,
+  configuration: HospitalConfiguration,
+  stationId: StationId | null,
+): string {
+  const name = (id: StationId | null): string =>
+    configuration.stations.find((s) => s.id === id)?.name ?? "Station";
+  const here = stationId ?? visit.currentEntry?.stationId ?? null;
+
+  switch (type) {
+    case "visit.called":
+      return `Called at ${name(here)}`;
+    case "visit.service_started":
+      return `Service started at ${name(here)}`;
+    case "visit.skipped":
+      return `Skipped at ${name(here)}`;
+    case "visit.routed": {
+      const entries = visit.queueEntries;
+      const from = entries[entries.length - 2]?.stationId ?? null;
+      return `Routed ${name(from)} → ${name(here)}`;
+    }
+    case "visit.completed":
+      return `${visit.journeyCode} completed`;
+    case "visit.cancelled":
+      return `${visit.journeyCode} cancelled`;
+    default:
+      return `${visit.journeyCode}: ${type}`;
+  }
 }
 
 function signedInUser(permissions: readonly Permission[]) {
