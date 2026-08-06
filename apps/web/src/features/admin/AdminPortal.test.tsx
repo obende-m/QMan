@@ -171,8 +171,10 @@ describe("Administration Portal", () => {
       screen.getAllByRole("button", { name: /move .* later/i })[0]!,
     );
 
-    const after = store.defaultWorkflow()!;
-    expect(after.stages.find((s) => s.stationId === firstStation)!.sequence).toBe(2);
+    await waitFor(() => {
+      const after = store.defaultWorkflow()!;
+      expect(after.stages.find((s) => s.stationId === firstStation)!.sequence).toBe(2);
+    });
   });
 
   it("refuses to leave nobody able to administer the hospital", async () => {
@@ -189,7 +191,7 @@ describe("Administration Portal", () => {
     await waitFor(() => screen.getByRole("alert"));
 
     expect(screen.getByRole("alert").textContent).toMatch(/not saved/i);
-    const admin = store.roles.find((r) => r.id === "role-administrator")!;
+    const admin = store.roles.find((r) => r.name === "Administrator")!;
     expect(admin.permissions).toContain("admin.users");
   });
 
@@ -234,6 +236,7 @@ describe("Administration Portal", () => {
     fireEvent.change(called, {
       target: { value: "Please proceed to {station}." },
     });
+    fireEvent.blur(called);
 
     // Every patient in the room would stand up.
     await waitFor(() => screen.getByRole("alert"));
