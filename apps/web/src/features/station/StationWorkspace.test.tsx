@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import type { ReactElement } from "react";
 import type { StationId } from "@qman/domain";
 import { StationWorkspace } from "./StationWorkspace.js";
@@ -55,8 +62,9 @@ describe("Station Workspace", () => {
     expect(screen.getByText(/time in consult/i)).toBeDefined();
     cleanup();
 
-    // Pharmacy starts clear, so call someone up before the timer exists.
-    store.callNext(STATIONS.pharmacy, USER_ID);
+    // Pharmacy starts clear, so call someone up before the timer exists. The
+    // call reaches the server, so wait for it to land before rendering.
+    await store.callNext(STATIONS.pharmacy, USER_ID);
     renderWorkspace(STATIONS.pharmacy, store);
     expect(screen.getByText(/time at counter/i)).toBeDefined();
     expect(screen.getByText(/start dispensing/i)).toBeDefined();
@@ -92,18 +100,24 @@ describe("Station Workspace", () => {
     renderWorkspace(STATIONS.pharmacy, store);
     const waiting = store.worklist(STATIONS.pharmacy).waiting;
     expect(waiting.length).toBeGreaterThan(0);
-    expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    });
 
     // Both the header and the empty state offer the action.
     fireEvent.click(screen.getAllByRole("button", { name: /call next/i })[0]!);
 
-    expect(store.worklist(STATIONS.pharmacy).current).not.toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current).not.toBeNull();
+    });
     expect(screen.getAllByText(waiting[0]!.patientName).length).toBeGreaterThan(0);
   });
 
   it("refuses to call next while a patient is still at the station", async () => {
     // Consultation already has someone in progress in the seeded clinic.
-    expect(store.worklist(STATIONS.consultation).current).not.toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.consultation).current).not.toBeNull();
+    });
     const result = await store.callNext(STATIONS.consultation, USER_ID);
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -131,10 +145,14 @@ describe("Station Workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^skip$/i }));
 
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.laboratory).current).toBeNull();
+    });
     const after = store.worklist(STATIONS.laboratory);
-    expect(after.current).toBeNull();
     // Back in the queue, not discarded.
-    expect(after.counts.waiting).toBe(before + 1);
+    await waitFor(() => {
+      expect(after.counts.waiting).toBe(before + 1);
+    });
     expect(
       after.waiting.find((item) => item.visitId === called.visitId)?.entry.skipped,
     ).toBe(true);
@@ -149,22 +167,30 @@ describe("Station Workspace", () => {
       within(sendTo).getByRole("button", { name: /consultation/i }),
     );
 
-    expect(store.worklist(STATIONS.laboratory).current).toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.laboratory).current).toBeNull();
+    });
     const moved = store.find(current.visitId)!;
     expect(moved.currentStationId).toBe(STATIONS.consultation);
   });
 
   it("supports keyboard-first operation", async () => {
     renderWorkspace(STATIONS.pharmacy, store);
-    expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    });
 
     fireEvent.keyDown(window, { key: "n" });
-    expect(store.worklist(STATIONS.pharmacy).current).not.toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current).not.toBeNull();
+    });
 
     fireEvent.keyDown(window, { key: "s" });
-    expect(store.worklist(STATIONS.pharmacy).current!.entry.status).toBe(
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current!.entry.status).toBe(
       "in_progress",
     );
+    });
   });
 
   it("ignores shortcuts while the user is typing", async () => {
@@ -174,7 +200,9 @@ describe("Station Workspace", () => {
     input.focus();
 
     fireEvent.keyDown(input, { key: "n" });
-    expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    await waitFor(() => {
+      expect(store.worklist(STATIONS.pharmacy).current).toBeNull();
+    });
 
     input.remove();
   });

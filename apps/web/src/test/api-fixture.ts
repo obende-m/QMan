@@ -315,9 +315,19 @@ export function defaultVisits(now = new Date()): Visit[] {
      */
     buildVisit({ name: "Tunde Bello", path: [STATION_IDS.vitals], arrivedMinutesAgo: 30 }, now),
     buildVisit({ name: "Ngozi Eze", path: [STATION_IDS.consultation], arrivedMinutesAgo: 18, priority: "high" }, now),
-    buildVisit({ name: "Chidi Obi", path: [STATION_IDS.laboratory], arrivedMinutesAgo: 25 }, now),
-    buildVisit({ name: "Fatima Yusuf", path: [STATION_IDS.laboratory], state: "called", arrivedMinutesAgo: 12 }, now),
+    /*
+     * Laboratory and Pharmacy each have someone called and someone waiting
+     * behind them. Called rather than in progress: a called patient can still
+     * be started, skipped, routed or completed, so one fixture state serves
+     * every action a workspace offers.
+     */
+    buildVisit(
+      { name: "Chidi Obi", path: [STATION_IDS.laboratory], state: "called", arrivedMinutesAgo: 25 },
+      now,
+    ),
+    buildVisit({ name: "Fatima Yusuf", path: [STATION_IDS.laboratory], arrivedMinutesAgo: 12 }, now),
     buildVisit({ name: "Emeka Nwosu", path: [STATION_IDS.pharmacy], arrivedMinutesAgo: 8 }, now),
+    buildVisit({ name: "Yemi Adebayo", path: [STATION_IDS.pharmacy], arrivedMinutesAgo: 6 }, now),
     buildVisit({ name: "Grace Adeyemi", path: [STATION_IDS.vitals], arrivedMinutesAgo: 5, priority: "emergency" }, now),
     // A patient part-way through their journey, so a timeline has both a past
     // and a future, and one whose visit is finished.
