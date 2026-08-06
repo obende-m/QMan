@@ -30,9 +30,10 @@ async function wire(): Promise<{
   // exactly as it does in production.
   const notifier = new Notifier({
     notifications: {
-      permission: "granted",
-      requestPermission: async () => "granted",
-      show: async () => true,
+      supported: true,
+      permission: () => "granted" as const,
+      requestPermission: async () => "granted" as const,
+      show: async () => {},
     },
     operations: ops,
     config: fixture.config,

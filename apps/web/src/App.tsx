@@ -278,7 +278,7 @@ function StationSwitcher({
                 : "text-on-surface-variant hover:bg-surface-container-high",
             )}
           >
-            <span aria-hidden="true">{profileFor(id).icon}</span>
+            <span aria-hidden="true">{profileFor(station.code).icon}</span>
             {station.name}
           </button>
 

@@ -64,7 +64,7 @@ export function StationWorkspace({
   const now = useNow(1000);
   const version = clinic.getVersion();
   const { announce } = useAnnouncer();
-  const profile = profileFor(stationId);
+  const profile = profileFor(config.station(stationId)?.code ?? "");
 
   const worklist = useMemo(
     () => clinic.worklist(stationId),
