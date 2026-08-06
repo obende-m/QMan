@@ -17,6 +17,8 @@
  */
 import {
   DEFAULT_TICKET_TEMPLATE,
+  hasBlockingProblems,
+  validateHospitalConfiguration,
   QUEUE_NUMBER_PRESETS,
   UserId,
   Visit,
@@ -406,9 +408,30 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     // Configuration writes echo the merged configuration, which is what the
     // server returns and what the store replaces its cache from.
     if (method === "PATCH" || (method === "POST" && url.includes("/api/v1/")) || method === "DELETE") {
-      current = applyWrite(current, url, method, body);
       if (url.includes("/roles")) return respond(200, { roles });
-      return respond(200, { configuration: current, warnings: [] });
+
+      /**
+       * Validated by the domain, exactly as the server validates it.
+       *
+       * Echoing the patch unvalidated would let a suite assert that an invalid
+       * configuration saved — which is the opposite of what those tests are
+       * for. The rule itself is not restated here: this calls the same
+       * function the API calls.
+       */
+      const next = applyWrite(current, url, method, body);
+      const problems = validateHospitalConfiguration(next);
+      if (hasBlockingProblems(problems)) {
+        return respond(422, {
+          error: "That change is not valid.",
+          problems: problems.filter((p) => p.severity === "error"),
+        });
+      }
+
+      current = next;
+      return respond(200, {
+        configuration: current,
+        warnings: problems.filter((p) => p.severity === "warning"),
+      });
     }
 
     return respond(404, { error: `Unhandled ${method} ${url}` });

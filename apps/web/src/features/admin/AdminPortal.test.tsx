@@ -71,9 +71,11 @@ describe("Administration Portal", () => {
     fireEvent.change(template, { target: { value: "OPD-{n:4}" } });
     fireEvent.blur(template);
 
-    expect(store.station(STATION_IDS.consultation)!.queueNumber.template).toBe(
+    await waitFor(() => {
+      expect(store.station(STATION_IDS.consultation)!.queueNumber.template).toBe(
       "OPD-{n:4}",
     );
+    });
     expect(screen.getByLabelText("Ticket preview").textContent).toBe("OPD-0007");
   });
 
@@ -85,11 +87,15 @@ describe("Administration Portal", () => {
     fireEvent.change(template, { target: { value: "OPD" } });
     fireEvent.blur(template);
 
+    await waitFor(() => screen.getByRole("alert"));
+
     expect(screen.getByRole("alert").textContent).toMatch(/not saved/i);
     // The store rejected it, so the old value stands.
-    expect(store.station(STATION_IDS.consultation)!.queueNumber.template).toBe(
+    await waitFor(() => {
+      expect(store.station(STATION_IDS.consultation)!.queueNumber.template).toBe(
       "A-{n:3}",
     );
+    });
   });
 
   it("changes a station's reset strategy", async () => {
@@ -117,9 +123,11 @@ describe("Administration Portal", () => {
     const target = screen.getByDisplayValue("30");
     fireEvent.change(target, { target: { value: "45" } });
     fireEvent.blur(target);
-    expect(store.station(STATION_IDS.consultation)!.sla.targetWaitMillis).toBe(
+    await waitFor(() => {
+      expect(store.station(STATION_IDS.consultation)!.sla.targetWaitMillis).toBe(
       45 * 60_000,
     );
+    });
   });
 
   it("blocks putting an internal station on a public display board", async () => {
@@ -131,6 +139,8 @@ describe("Administration Portal", () => {
       exact: false,
     });
     fireEvent.click(receptionToggle);
+
+    await waitFor(() => screen.getByRole("alert"));
 
     expect(screen.getByRole("alert").textContent).toMatch(/not saved/i);
     expect(
@@ -176,6 +186,8 @@ describe("Administration Portal", () => {
     });
     fireEvent.click(checkbox);
 
+    await waitFor(() => screen.getByRole("alert"));
+
     expect(screen.getByRole("alert").textContent).toMatch(/not saved/i);
     const admin = store.roles.find((r) => r.id === "role-administrator")!;
     expect(admin.permissions).toContain("admin.users");
@@ -190,8 +202,14 @@ describe("Administration Portal", () => {
     fireEvent.blur(name);
     await waitFor(() => expect(store.config.profile.name).toBe("Lagos Central"));
 
+    // The text field, not the colour swatch: a colour input coerces whatever
+    // it is given to a valid hex, so it cannot carry the invalid value this
+    // test is about.
     const colors = screen.getAllByDisplayValue("#003ec7");
-    fireEvent.change(colors[colors.length - 1]!, { target: { value: "blue" } });
+    const hexField = colors[colors.length - 1]!;
+    fireEvent.change(hexField, { target: { value: "blue" } });
+    fireEvent.blur(hexField);
+    await waitFor(() => screen.getByRole("alert"));
     expect(screen.getByRole("alert").textContent).toMatch(/not saved/i);
     await waitFor(() => expect(store.config.profile.brandColor).toBe("#003ec7"));
   });
@@ -218,6 +236,7 @@ describe("Administration Portal", () => {
     });
 
     // Every patient in the room would stand up.
+    await waitFor(() => screen.getByRole("alert"));
     expect(screen.getByRole("alert").textContent).toMatch(
       /must include \{ticket\}, \{journey\} or \{name\}/,
     );
