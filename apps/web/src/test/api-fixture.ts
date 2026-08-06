@@ -199,7 +199,7 @@ export const ALL_TEST_PERMISSIONS: Permission[] = [
 export interface VisitPlan {
   readonly name: string;
   readonly hospitalNumber?: string;
-  readonly priority?: "normal" | "high" | "emergency";
+  readonly priority?: "normal" | "high" | "vip" | "emergency";
   /** Stations the visit has passed through, in order. The last is current. */
   readonly path: readonly StationId[];
   /** Whether the patient at the final station has been called and started. */
@@ -328,6 +328,22 @@ export function defaultVisits(now = new Date()): Visit[] {
     buildVisit({ name: "Fatima Yusuf", path: [STATION_IDS.laboratory], arrivedMinutesAgo: 12 }, now),
     buildVisit({ name: "Emeka Nwosu", path: [STATION_IDS.pharmacy], arrivedMinutesAgo: 8 }, now),
     buildVisit({ name: "Yemi Adebayo", path: [STATION_IDS.pharmacy], arrivedMinutesAgo: 6 }, now),
+    // A courtesy tier and a long-waiting emergency: the first proves a chip
+    // renders for a non-normal priority, the second that urgency surfaces even
+    // when the visit is too old to appear in Recent Visits.
+    buildVisit(
+      { name: "Ibrahim Sani", path: [STATION_IDS.consultation], priority: "vip", arrivedMinutesAgo: 15 },
+      now,
+    ),
+    buildVisit(
+      {
+        name: "Halima Musa",
+        path: [STATION_IDS.laboratory],
+        priority: "emergency",
+        arrivedMinutesAgo: 240,
+      },
+      now,
+    ),
     buildVisit({ name: "Grace Adeyemi", path: [STATION_IDS.vitals], arrivedMinutesAgo: 5, priority: "emergency" }, now),
     // A patient part-way through their journey, so a timeline has both a past
     // and a future, and one whose visit is finished.
