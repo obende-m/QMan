@@ -22,9 +22,8 @@ import { stationName, stationRoom } from "../../data/clinic-projections.js";
 import { useConfig } from "../../data/useConfig.js";
 import { journeySteps } from "../../data/journey-steps.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
-import type { EventBus } from "../../data/event-bus.js";
 import type { Notifier } from "../../runtime/notifier.js";
-import { PatientAlerts } from "./PatientAlerts.js";
+import { PatientAlerts, type PatientAlertsProps } from "./PatientAlerts.js";
 
 /**
  * Patient Journey Tracking.
@@ -47,7 +46,7 @@ export interface PatientJourneyProps {
   /** Pre-fills the lookup, as a QR scan would. */
   initialCode?: string;
   /** Supplied by the tracker app; omitted in tests that do not need alerts. */
-  alerts?: { notifier: Notifier; bus: EventBus };
+  alerts?: { notifier: Notifier; stream: PatientAlertsProps["stream"] };
 }
 
 export function PatientJourney({
@@ -225,7 +224,7 @@ export function PatientJourney({
         <PatientAlerts
           visitId={visit.id}
           notifier={alerts.notifier}
-          bus={alerts.bus}
+          stream={alerts.stream}
         />
       )}
 

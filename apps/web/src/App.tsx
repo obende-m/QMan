@@ -109,7 +109,27 @@ export function App() {
     if (user === null || config.status !== "ready") return;
     const branchId = user.branchId ?? config.config.branches[0]?.id;
     if (branchId === undefined) return;
-    void clinic.load(branchId);
+
+    void (async () => {
+      await clinic.load(branchId);
+
+      /*
+       * The audit trail is read once, then kept current by the stream.
+       *
+       * Without this the Activity Explorer would be empty on every page load
+       * and fill only with what happened after it opened — a log that forgets
+       * the morning is worse than no log, because it looks complete.
+       */
+      const { events } = await stores.activity.read({ branchId });
+      operationsStore.ingestHistory(events);
+
+      /*
+       * Opened last, and only once a session and a branch exist. The stream
+       * requires authentication, so starting it earlier spends a connection
+       * attempt and a backoff step on a request that is going to be refused.
+       */
+      stores.stream.start();
+    })();
   }, [clinic, config, config.status, user]);
 
   /** Opens the first workspace station the hospital actually has. */

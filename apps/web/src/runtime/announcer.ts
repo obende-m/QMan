@@ -5,7 +5,6 @@ import {
   type StationId,
   type VisitEvent,
 } from "@qman/domain";
-import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
 import { stationName, stationRoom } from "../data/clinic-projections.js";
@@ -77,25 +76,6 @@ export class VoiceAnnouncer {
         }),
       );
     });
-  }
-
-  subscriber(): EventSubscriber {
-    return {
-      name: "voice-announcer",
-      events: ["visit.called", "visit.routed", "visit.completed"],
-      handle: (event) => {
-        const config = this.options.operations.announcementConfig;
-        if (!config.enabled) return;
-
-        const announcementEvent = toAnnouncementEvent(event);
-        if (!announcementEvent) return;
-
-        const text = this.#render(config, announcementEvent, event);
-        if (!text) return;
-
-        this.#enqueue(config, text);
-      },
-    };
   }
 
   #render(

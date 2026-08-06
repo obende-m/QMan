@@ -128,6 +128,16 @@ export function testConfiguration(
     showRoom: true,
   };
 
+  const labBoard: DisplayBoardConfig = {
+    id: "board-lab",
+    name: "Laboratory Waiting Area",
+    stationIds: [STATION_IDS.laboratory],
+    waitingToShow: 8,
+    namePolicy: "ticket_only",
+    showEstimatedWait: true,
+    showRoom: true,
+  };
+
   return {
     profile: {
       id: HOSPITAL_ID,
@@ -140,7 +150,7 @@ export function testConfiguration(
     branches: [{ id: BRANCH_ID, name: "Main Branch", code: "MAIN", isDefault: true }],
     stations,
     workflows: [workflow],
-    displayBoards: [board],
+    displayBoards: [board, labBoard],
     ticketTemplates: [DEFAULT_TICKET_TEMPLATE],
     defaults: { namePolicy: "ticket_only", ticketTemplateId: DEFAULT_TICKET_TEMPLATE.id },
     ...overrides,
@@ -209,6 +219,7 @@ export interface VisitPlan {
 }
 
 let sequence = 0;
+const ticketOrdinals = new Map<StationId, number>();
 
 /** Four symbols from the domain's own alphabet. */
 const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -255,21 +266,21 @@ export function buildVisit(plan: VisitPlan, now: Date): Visit {
   );
 
   const path = plan.path;
-  const ticket = (stationId: StationId, ordinal: number) => ({
-    ordinal,
-    label: `${ticketPrefix(stationId)}-${String(ordinal).padStart(3, "0")}`,
-    periodKey: "fixture",
-  });
+  /**
+   * Ordinals run across the whole fixture rather than per visit, so two
+   * patients at one station never hold the same ticket — which is the one
+   * thing a queue number must guarantee.
+   */
+  const ticket = (stationId: StationId) => nextTicket(stationId);
 
   path.forEach((stationId, index) => {
-    const ordinal = index + 1;
     if (index === 0) {
-      visit.enqueue(stationId, ticket(stationId, ordinal), { actorId: USER_ID });
+      visit.enqueue(stationId, ticket(stationId), { actorId: USER_ID });
     } else {
       visit.call(USER_ID, { actorId: USER_ID });
       visit.startService(USER_ID, { actorId: USER_ID });
       clock = new Date(clock.getTime() + 5 * 60_000);
-      visit.routeTo(stationId, ticket(stationId, ordinal), {
+      visit.routeTo(stationId, ticket(stationId), {
         actorId: USER_ID,
         followedWorkflow: true,
       });
@@ -289,6 +300,17 @@ export function buildVisit(plan: VisitPlan, now: Date): Visit {
 
   visit.pullEvents();
   return visit;
+}
+
+/** The next ticket for a station, in that station's format. */
+export function nextTicket(stationId: StationId) {
+  const ordinal = (ticketOrdinals.get(stationId) ?? 0) + 1;
+  ticketOrdinals.set(stationId, ordinal);
+  return {
+    ordinal,
+    label: `${ticketPrefix(stationId)}-${String(ordinal).padStart(3, "0")}`,
+    periodKey: "fixture",
+  };
 }
 
 function ticketPrefix(stationId: StationId): string {
@@ -499,11 +521,12 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
         else if (name === "cancel") visit.cancel({ actorId: USER_ID });
         else if (name === "route") {
           const to = (body as { stationId: string }).stationId as StationId;
-          visit.routeTo(
-            to,
-            { ordinal: 1, label: "R-001", periodKey: "fixture" },
-            { actorId: USER_ID, followedWorkflow: true },
-          );
+          // The destination station issues the ticket, in its own format —
+          // which is the property a board asserts when a patient moves.
+          visit.routeTo(to, nextTicket(to), {
+            actorId: USER_ID,
+            followedWorkflow: true,
+          });
         } else {
           return respond(404, { error: `Unhandled action ${name}` });
         }

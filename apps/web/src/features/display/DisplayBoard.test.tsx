@@ -1,35 +1,46 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { DisplayBoard } from "./DisplayBoard.js";
-import { CURRENT_USER, ClinicStore } from "../../data/clinic-store.js";
-import { STATIONS } from "../../data/demo-clinic.js";
-import { boardById, type DisplayBoardConfig } from "../../data/display-boards.js";
-
-const MAIN = boardById("board-main");
+import type { DisplayBoardConfig } from "@qman/domain";
+import type { ClinicStore } from "../../data/clinic-store.js";
+import {
+  BRANCH_ID,
+  createFixture,
+  STATION_IDS as STATIONS,
+  USER_ID,
+  type Fixture,
+} from "../../test/api-fixture.js";
 
 function panelFor(name: RegExp): HTMLElement {
   return screen.getByRole("region", { name });
 }
 
 describe("Display Board", () => {
+  let fixture: Fixture;
   let store: ClinicStore;
+  let MAIN: DisplayBoardConfig;
 
-  beforeEach(() => {
-    store = new ClinicStore();
+  beforeEach(async () => {
+    fixture = await createFixture();
+    store = fixture.clinic;
+    MAIN = fixture.config.board("board-main")!;
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
-  it("shows a panel per configured station, not just one at a time", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("shows a panel per configured station, not just one at a time", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     expect(panelFor(/consultation queue/i)).toBeDefined();
     expect(panelFor(/laboratory queue/i)).toBeDefined();
     expect(panelFor(/pharmacy queue/i)).toBeDefined();
   });
 
-  it("shows only the stations a board is configured for", () => {
-    const labOnly: DisplayBoardConfig = boardById("board-lab");
-    render(<DisplayBoard config={labOnly} store={store} />);
+  it("shows only the stations a board is configured for", async () => {
+    const labOnly: DisplayBoardConfig = fixture.config.board("board-lab")!;
+    render(<DisplayBoard config={labOnly} branchId={BRANCH_ID} store={store} />);
     expect(panelFor(/laboratory queue/i)).toBeDefined();
     expect(screen.queryByRole("region", { name: /pharmacy queue/i })).toBeNull();
     expect(
@@ -37,8 +48,8 @@ describe("Display Board", () => {
     ).toBeNull();
   });
 
-  it("separates the serving ticket from the waiting queue", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("separates the serving ticket from the waiting queue", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     const consultation = panelFor(/consultation queue/i);
 
     const serving = store.worklist(STATIONS.consultation).current!;
@@ -47,8 +58,8 @@ describe("Display Board", () => {
     expect(within(consultation).getByText(/^waiting$/i)).toBeDefined();
   });
 
-  it("calls patients by station ticket, using each station's own format", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("calls patients by station ticket, using each station's own format", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
 
     // Consultation issues an A- series, Laboratory an L- series, Pharmacy a P-.
     const consultation = panelFor(/consultation queue/i);
@@ -58,17 +69,17 @@ describe("Display Board", () => {
     expect(laboratory.textContent).toMatch(/L-\d{3}/);
   });
 
-  it("does not put patient names on a public screen by default", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("does not put patient names on a public screen by default", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     expect(MAIN.namePolicy).toBe("ticket_only");
-    for (const { visit } of store.visits) {
+    for (const visit of store.visits) {
       expect(screen.queryByText(visit.patient.name)).toBeNull();
     }
   });
 
-  it("shows first names only when a clinic chooses that policy", () => {
+  it("shows first names only when a clinic chooses that policy", async () => {
     const firstNames: DisplayBoardConfig = { ...MAIN, namePolicy: "first_name" };
-    render(<DisplayBoard config={firstNames} store={store} />);
+    render(<DisplayBoard config={firstNames} branchId={BRANCH_ID} store={store} />);
 
     const serving = store.worklist(STATIONS.consultation).current!;
     const [first] = serving.patientName.split(" ");
@@ -77,33 +88,33 @@ describe("Display Board", () => {
     expect(screen.queryByText(serving.patientName)).toBeNull();
   });
 
-  it("shows the full name when a clinic opts all the way in", () => {
+  it("shows the full name when a clinic opts all the way in", async () => {
     const named: DisplayBoardConfig = { ...MAIN, namePolicy: "full_name" };
-    render(<DisplayBoard config={named} store={store} />);
+    render(<DisplayBoard config={named} branchId={BRANCH_ID} store={store} />);
     const serving = store.worklist(STATIONS.consultation).current!;
     expect(screen.getAllByText(serving.patientName).length).toBeGreaterThan(0);
   });
 
-  it("shows the room so patients know where to walk", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("shows the room so patients know where to walk", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     expect(screen.getByText("Room 12")).toBeDefined();
   });
 
-  it("shows an estimated wait for new arrivals", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("shows an estimated wait for new arrivals", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     expect(screen.getAllByText(/new arrivals ≈/i).length).toBeGreaterThan(0);
   });
 
-  it("numbers waiting positions independently of the ticket", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("numbers waiting positions independently of the ticket", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     const consultation = panelFor(/consultation queue/i);
     // Position 1 exists and is distinct from the ticket label beside it.
     expect(within(consultation).getByLabelText("Position 1")).toBeDefined();
   });
 
-  it("caps the waiting list and reports the overflow", () => {
+  it("caps the waiting list and reports the overflow", async () => {
     const tight: DisplayBoardConfig = { ...MAIN, waitingToShow: 1 };
-    render(<DisplayBoard config={tight} store={store} />);
+    render(<DisplayBoard config={tight} branchId={BRANCH_ID} store={store} />);
     const consultation = panelFor(/consultation queue/i);
     const waitingCount = store.worklist(STATIONS.consultation).counts.waiting;
     if (waitingCount > 1) {
@@ -117,8 +128,8 @@ describe("Display Board", () => {
    * The behaviour the requirement calls "automatic queue updates": staff act at
    * a station, and the board follows with no manual reordering anywhere.
    */
-  it("moves the next patient up automatically when one is called", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("moves the next patient up automatically when one is called", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     const pharmacy = panelFor(/pharmacy queue/i);
 
     const nextUp = store.worklist(STATIONS.pharmacy).waiting[0]!;
@@ -126,8 +137,8 @@ describe("Display Board", () => {
 
     // The store is external to React, so the subscription flush has to be
     // wrapped — exactly as a websocket message from the API will be.
-    act(() => {
-      store.callNext(STATIONS.pharmacy, CURRENT_USER);
+    await act(async () => {
+      await store.callNext(STATIONS.pharmacy, USER_ID);
     });
 
     // The board re-rendered from the store subscription, with no refresh.
@@ -136,12 +147,12 @@ describe("Display Board", () => {
     expect(servingBlock.textContent).toContain(nextUp.entry.queueLabel);
   });
 
-  it("removes a patient from the station once they are routed onward", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("removes a patient from the station once they are routed onward", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     const serving = store.worklist(STATIONS.consultation).current!;
 
-    act(() => {
-      store.route(serving.visitId, STATIONS.laboratory, CURRENT_USER);
+    await act(async () => {
+      await store.route(serving.visitId, STATIONS.laboratory, USER_ID);
     });
 
     const consultation = panelFor(/consultation queue/i);
@@ -149,17 +160,17 @@ describe("Display Board", () => {
 
     // And they appear at the destination under a brand-new station ticket.
     const moved = store.find(serving.visitId)!;
-    expect(moved.visit.currentStationId).toBe(STATIONS.laboratory);
-    expect(moved.visit.currentEntry!.queueLabel).not.toBe(
+    expect(moved.currentStationId).toBe(STATIONS.laboratory);
+    expect(moved.currentEntry!.queueLabel).not.toBe(
       serving.entry.queueLabel,
     );
   });
 
-  it("shows an empty station honestly rather than a stale ticket", () => {
-    render(<DisplayBoard config={boardById("board-lab")} store={store} />);
+  it("shows an empty station honestly rather than a stale ticket", async () => {
+    render(<DisplayBoard config={fixture.config.board("board-lab")!} branchId={BRANCH_ID} store={store} />);
     const serving = store.worklist(STATIONS.laboratory).current!;
-    act(() => {
-      store.route(serving.visitId, STATIONS.consultation, CURRENT_USER);
+    await act(async () => {
+      await store.route(serving.visitId, STATIONS.consultation, USER_ID);
     });
 
     const laboratory = panelFor(/laboratory queue/i);
@@ -173,21 +184,28 @@ describe("Display Board", () => {
  * what it reads.
  */
 describe("Display Board connection honesty", () => {
+  let fixture: Fixture;
   let store: ClinicStore;
+  let MAIN: DisplayBoardConfig;
 
-  beforeEach(() => {
-    store = new ClinicStore();
+  beforeEach(async () => {
+    fixture = await createFixture();
+    store = fixture.clinic;
+    MAIN = fixture.config.board("board-main")!;
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
   it("says it is live while the source keeps reporting", async () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     expect(await screen.findByText("Live")).toBeDefined();
   });
 
-  it("does not show a freshness line while the data is trustworthy", () => {
-    render(<DisplayBoard config={MAIN} store={store} />);
+  it("does not show a freshness line while the data is trustworthy", async () => {
+    render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
     // Clean when healthy; the age only earns its place once it matters.
     expect(screen.queryByText(/Updated .* ago/)).toBeNull();
   });
@@ -195,7 +213,7 @@ describe("Display Board connection honesty", () => {
   it("stops claiming to be live once the source falls silent", async () => {
     vi.useFakeTimers();
     try {
-      render(<DisplayBoard config={MAIN} store={store} />);
+      render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
 
       // Nothing calls keepAlive(): the transport has gone away.
       await act(async () => {
@@ -213,7 +231,7 @@ describe("Display Board connection honesty", () => {
   it("reports a lost connection after minutes of silence", async () => {
     vi.useFakeTimers();
     try {
-      render(<DisplayBoard config={MAIN} store={store} />);
+      render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4 * 60_000);
       });
@@ -228,7 +246,7 @@ describe("Display Board connection honesty", () => {
   it("recovers as soon as the source reports again", async () => {
     vi.useFakeTimers();
     try {
-      render(<DisplayBoard config={MAIN} store={store} />);
+      render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
@@ -248,7 +266,7 @@ describe("Display Board connection honesty", () => {
   it("keeps showing the queue while stale rather than blanking the screen", async () => {
     vi.useFakeTimers();
     try {
-      render(<DisplayBoard config={MAIN} store={store} />);
+      render(<DisplayBoard config={MAIN} branchId={BRANCH_ID} store={store} />);
       const serving = store.worklist(STATIONS.consultation).current!;
 
       await act(async () => {
@@ -265,36 +283,46 @@ describe("Display Board connection honesty", () => {
 });
 
 describe("Journey Code and queue number are different identities", () => {
+  let fixture: Fixture;
   let store: ClinicStore;
 
-  beforeEach(() => {
-    store = new ClinicStore();
+  beforeEach(async () => {
+    fixture = await createFixture();
+    store = fixture.clinic;
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
-  it("keeps the Journey Code fixed while the station ticket changes", () => {
+  it("keeps the Journey Code fixed while the station ticket changes", async () => {
     const serving = store.worklist(STATIONS.consultation).current!;
-    const visit = store.find(serving.visitId)!.visit;
+    const visit = store.find(serving.visitId)!;
 
     const journeyCodeBefore = visit.journeyCode;
     const ticketBefore = visit.currentEntry!.queueLabel;
 
-    store.route(visit.id, STATIONS.laboratory, CURRENT_USER);
+    await store.route(visit.id, STATIONS.laboratory, USER_ID);
 
-    expect(visit.journeyCode).toBe(journeyCodeBefore);
-    expect(visit.currentEntry!.queueLabel).not.toBe(ticketBefore);
-    expect(visit.currentEntry!.queueLabel).toMatch(/^L-\d{3}$/);
+    // The store replaces the aggregate with what the server returned, so read
+    // it again rather than holding the instance from before the action.
+    const moved = store.find(visit.id)!;
+    expect(moved.journeyCode).toBe(journeyCodeBefore);
+    expect(moved.currentEntry!.queueLabel).not.toBe(ticketBefore);
+    expect(moved.currentEntry!.queueLabel).toMatch(/^L-\d{3}$/);
   });
 
-  it("preserves the ticket each station issued on the visit's history", () => {
+  it("preserves the ticket each station issued on the visit's history", async () => {
     const serving = store.worklist(STATIONS.consultation).current!;
-    const visit = store.find(serving.visitId)!.visit;
-    store.route(visit.id, STATIONS.laboratory, CURRENT_USER);
+    const visit = store.find(serving.visitId)!;
+    await store.route(visit.id, STATIONS.laboratory, USER_ID);
 
     // Every leg keeps the label it was issued — the audit trail does not
     // re-render under the destination station's format.
-    const labels = visit.queueEntries.map((entry) => entry.queueLabel);
+    const labels = store
+      .find(visit.id)!
+      .queueEntries.map((entry) => entry.queueLabel);
     expect(new Set(labels).size).toBe(labels.length);
     expect(labels.at(-1)).toMatch(/^L-/);
   });

@@ -4,7 +4,6 @@ import {
   type VisitEvent,
   type VisitId,
 } from "@qman/domain";
-import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
 import { stationName, stationRoom } from "../data/clinic-projections.js";
@@ -136,104 +135,6 @@ export class Notifier {
         recipient: "patient",
       });
     });
-  }
-
-  staffSubscriber(stationId: StationId): EventSubscriber {
-    return {
-      name: `staff-notifier:${stationId}`,
-      events: ["visit.queued", "visit.priority_changed"],
-      handle: (event) => {
-        const payload = event.payload as Record<string, unknown>;
-
-        if (event.type === "visit.queued") {
-          if (payload["stationId"] !== stationId) return;
-          const ticket = (payload["queueLabel"] as string) ?? "";
-          const priority = payload["priority"] as string;
-          const urgent = priority === "emergency" || priority === "high";
-
-          void this.#deliver({
-            title: urgent
-              ? `${priority === "emergency" ? "Emergency" : "Urgent"} patient waiting`
-              : "New patient in your queue",
-            body: `${ticket} joined ${stationName(this.options.config.config, stationId)}.`,
-            tag: `queue-${stationId}`,
-            requireInteraction: urgent,
-            visitId: event.visitId,
-            recipient: "staff",
-          });
-          return;
-        }
-
-        // An escalation at this station needs attention even if the patient was
-        // already waiting.
-        if (payload["to"] === "emergency") {
-          void this.#deliver({
-            title: "Patient escalated to Emergency",
-            body: `A patient at ${stationName(this.options.config.config, stationId)} now needs urgent attention.`,
-            tag: `escalation-${stationId}`,
-            requireInteraction: true,
-            visitId: event.visitId,
-            recipient: "staff",
-          });
-        }
-      },
-    };
-  }
-
-  /**
-   * Patient notifications for one visit.
-   *
-   * Uses the same rendered announcement text as the voice system, so what the
-   * patient reads on their phone matches what is said aloud in the room
-   * (ADR-030).
-   */
-  patientSubscriber(visitId: VisitId): EventSubscriber {
-    return {
-      name: `patient-notifier:${visitId}`,
-      events: ["visit.called", "visit.routed", "visit.completed"],
-      handle: (event) => {
-        if (event.visitId !== visitId) return;
-
-        const config = this.options.operations.announcementConfig;
-        const payload = event.payload as Record<string, unknown>;
-        const stationId =
-          (payload["stationId"] as StationId | undefined) ??
-          (payload["toStationId"] as StationId | undefined);
-        if (!stationId) return;
-
-        const announcementEvent =
-          event.type === "visit.called"
-            ? (payload["callAttempt"] as number) > 1
-              ? "recalled"
-              : "called"
-            : event.type === "visit.routed"
-              ? "routed"
-              : "completed";
-
-        const body = renderAnnouncement(config, announcementEvent, {
-          ticket: (payload["queueLabel"] as string) ?? "",
-          journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
-          patientName: (payload["patientName"] as string) ?? "",
-          stationName: stationName(this.options.config.config, stationId),
-          room: stationRoom(this.options.config.config, stationId),
-          hospitalName: this.options.config.config.profile.name,
-          namePolicy: this.options.config.config.defaults.namePolicy,
-        });
-
-        const isTurn = event.type === "visit.called";
-
-        void this.#deliver({
-          title: isTurn ? "It's your turn" : titleFor(event),
-          body,
-          // One tag per visit: a recall replaces the previous notification
-          // rather than stacking a second one.
-          tag: `visit-${visitId}`,
-          requireInteraction: isTurn,
-          visitId,
-          recipient: "patient",
-        });
-      },
-    };
   }
 
   async #deliver(input: {

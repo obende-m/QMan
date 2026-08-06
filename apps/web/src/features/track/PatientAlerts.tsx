@@ -4,7 +4,7 @@ import type { VisitId } from "@qman/domain";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import type { Notifier } from "../../runtime/notifier.js";
-import type { EventBus } from "../../data/event-bus.js";
+import type { StreamEventLike } from "../../data/operations-store.js";
 import {
   canInstall,
   isInstalled,
@@ -24,10 +24,11 @@ import {
 export interface PatientAlertsProps {
   visitId: VisitId;
   notifier: Notifier;
-  bus: EventBus;
+  /** The event stream this visit's alerts are drawn from. */
+  stream: { onEvent: (listener: (event: StreamEventLike) => void) => () => void };
 }
 
-export function PatientAlerts({ visitId, notifier, bus }: PatientAlertsProps) {
+export function PatientAlerts({ visitId, notifier, stream }: PatientAlertsProps) {
   const [permission, setPermission] = useState(() => notifier.permission);
   const [installable, setInstallable] = useState(canInstall);
   const installed = isInstalled();
@@ -36,8 +37,8 @@ export function PatientAlerts({ visitId, notifier, bus }: PatientAlertsProps) {
   // recorded as denied — before they have made a choice.
   useEffect(() => {
     if (permission !== "granted") return;
-    return bus.subscribe(notifier.patientSubscriber(visitId));
-  }, [bus, notifier, visitId, permission]);
+    return notifier.attachPatientToStream(stream, visitId);
+  }, [stream, notifier, visitId, permission]);
 
   useEffect(() => onInstallabilityChange(setInstallable), []);
 
