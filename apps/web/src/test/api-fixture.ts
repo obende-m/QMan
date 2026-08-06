@@ -19,6 +19,7 @@ import {
   DEFAULT_TICKET_TEMPLATE,
   hasBlockingProblems,
   validateHospitalConfiguration,
+  validateRoles,
   QUEUE_NUMBER_PRESETS,
   UserId,
   Visit,
@@ -324,7 +325,7 @@ export interface Fixture {
 export async function createFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const configuration = options.configuration ?? testConfiguration();
   const visits = options.visits ?? defaultVisits();
-  const roles = options.roles ?? TEST_ROLES;
+  const roles = [...(options.roles ?? TEST_ROLES)];
   const permissions = options.permissions ?? ALL_TEST_PERMISSIONS;
 
   let current = configuration;
@@ -408,7 +409,24 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     // Configuration writes echo the merged configuration, which is what the
     // server returns and what the store replaces its cache from.
     if (method === "PATCH" || (method === "POST" && url.includes("/api/v1/")) || method === "DELETE") {
-      if (url.includes("/roles")) return respond(200, { roles });
+      if (url.includes("/roles")) {
+        // Roles have their own rule, and it guards one specific catastrophe:
+        // a hospital editing its way to having no role that can manage users.
+        const next = applyRoleWrite(roles, url, method, body);
+        const problems = validateRoles(next);
+        if (problems.length > 0) {
+          return respond(422, {
+            error: "That change is not valid.",
+            problems: problems.map((message) => ({
+              path: "roles",
+              message,
+              severity: "error",
+            })),
+          });
+        }
+        roles.splice(0, roles.length, ...next);
+        return respond(200, { roles });
+      }
 
       /**
        * Validated by the domain, exactly as the server validates it.
@@ -460,6 +478,32 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       globalThis.fetch = originalFetch;
     },
   };
+}
+
+/** Applies a role change the way the service does, so validation sees the set. */
+function applyRoleWrite(
+  roles: readonly RoleConfig[],
+  url: string,
+  method: string,
+  body: unknown,
+): RoleConfig[] {
+  const patch = (body ?? {}) as Partial<RoleConfig>;
+  const id = decodeURIComponent(url.split("/").pop() ?? "");
+
+  if (method === "POST") {
+    return [
+      ...roles,
+      {
+        id: `role-${(sequence += 1)}`,
+        name: patch.name ?? "",
+        description: patch.description ?? "",
+        permissions: patch.permissions ?? [],
+        isSystem: false,
+      },
+    ];
+  }
+  if (method === "DELETE") return roles.filter((role) => role.id !== id);
+  return roles.map((role) => (role.id === id ? { ...role, ...patch } : role));
 }
 
 function signedInUser(permissions: readonly Permission[]) {
