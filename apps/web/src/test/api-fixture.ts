@@ -363,6 +363,46 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       return respond(200, { visits: visits.map((visit) => ({ state: visitToWire(visit) })) });
     }
 
+    /**
+     * Queue actions run against the real aggregate, exactly as the server does.
+     *
+     * A stub that returned a hand-written visit would let a suite assert a
+     * transition the state machine forbids — which is the one thing these
+     * tests exist to catch.
+     */
+    const action = url.match(/\/api\/v1\/visits\/([^/]+)\/(\w+)$/);
+    if (action !== null && method === "POST") {
+      const [, rawId, name] = action;
+      const visit = visits.find((v) => v.id === decodeURIComponent(rawId!));
+      if (visit === undefined) return respond(404, { error: "No such visit." });
+
+      try {
+        if (name === "call" || name === "recall") visit.call(USER_ID, { actorId: USER_ID });
+        else if (name === "start") visit.startService(USER_ID, { actorId: USER_ID });
+        else if (name === "skip") visit.skip({ actorId: USER_ID });
+        else if (name === "complete") visit.complete({ actorId: USER_ID });
+        else if (name === "cancel") visit.cancel({ actorId: USER_ID });
+        else if (name === "route") {
+          const to = (body as { stationId: string }).stationId as StationId;
+          visit.routeTo(
+            to,
+            { ordinal: 1, label: "R-001", periodKey: "fixture" },
+            { actorId: USER_ID, followedWorkflow: true },
+          );
+        } else {
+          return respond(404, { error: `Unhandled action ${name}` });
+        }
+      } catch (error) {
+        visit.pullEvents();
+        return respond(409, {
+          error: error instanceof Error ? error.message : "Conflict",
+        });
+      }
+
+      visit.pullEvents();
+      return respond(200, { visit: { state: visitToWire(visit) } });
+    }
+
     // Configuration writes echo the merged configuration, which is what the
     // server returns and what the store replaces its cache from.
     if (method === "PATCH" || (method === "POST" && url.includes("/api/v1/")) || method === "DELETE") {
