@@ -153,6 +153,34 @@ function endSessionCookies(reply: FastifyReply, secure: boolean): void {
   ]);
 }
 
+/**
+ * PostgreSQL SQLSTATE codes that mean "you asked for something the rules do not
+ * allow", and the answer each deserves.
+ *
+ * Deliberately narrow. Codes not listed here — a syntax error, an undefined
+ * column, a failed connection — are genuine faults and must keep returning 500,
+ * because they are the server's problem and not the caller's.
+ */
+const CONSTRAINT_RESPONSES: Record<string, { status: number; message: string }> = {
+  // unique_violation: a code, name or key that is already taken.
+  "23505": {
+    status: 409,
+    message: "Something with that identifier already exists. Choose another.",
+  },
+  // foreign_key_violation: referencing something absent, or deleting something
+  // still referenced.
+  "23503": {
+    status: 409,
+    message: "That is still in use, or refers to something that no longer exists.",
+  },
+  // check_violation: a value outside the set the schema allows.
+  "23514": { status: 422, message: "That value is not allowed here." },
+  // not_null_violation: a required field arrived empty.
+  "23502": { status: 422, message: "A required value is missing." },
+  // invalid_text_representation: a malformed uuid in a path, most often.
+  "22P02": { status: 400, message: "That identifier is not valid." },
+};
+
 export function buildServer(options: ServerOptions): FastifyInstance {
   const logger = options.logger ?? silentLogger();
   const now = options.now ?? (() => new Date());
@@ -224,6 +252,36 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   });
 
   app.setErrorHandler((error: Error, request, reply) => {
+    /*
+     * A constraint the database enforces is a business rule, not a crash.
+     *
+     * Every one of these is something a user can do on purpose: reusing a
+     * station code, deleting a workflow a visit still references, storing a
+     * status the CHECK does not allow. Answering 500 tells them "something went
+     * wrong" for a decision they made and could correct, and puts an alarm in
+     * the log for a working system.
+     *
+     * Mapped here rather than at each call site, so a constraint added later is
+     * covered by default. The detail is deliberately not returned: it names
+     * columns and constraints, which is schema disclosure. The request id is,
+     * so a support call can find this entry.
+     */
+    const code = (error as { code?: unknown }).code;
+    const constraint = typeof code === "string" ? CONSTRAINT_RESPONSES[code] : undefined;
+    if (constraint !== undefined) {
+      logger.warn("constraint refused", {
+        requestId: request.requestId,
+        path: request.url,
+        hospitalId: request.authenticated?.hospitalId,
+        pgCode: code,
+        constraint: (error as { constraint?: string }).constraint,
+      });
+      return reply.status(constraint.status).send({
+        error: constraint.message,
+        requestId: request.requestId,
+      });
+    }
+
     logger.error("unhandled error", {
       requestId: request.requestId,
       path: request.url,

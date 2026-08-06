@@ -445,6 +445,37 @@ suite("QMan end to end, against real PostgreSQL", () => {
       expect(events[events.length - 1]!.summary).toContain("Freshsprings");
     }, 60_000);
 
+    /** A constraint the user can trip on purpose must not read as a crash. */
+    it("answers a duplicate station code with 409, not 500", async () => {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/v1/stations",
+        headers: writing(admin),
+        // "REC" is the starter Reception station's code, and the database
+        // enforces UNIQUE (branch_id, code). The domain treats a duplicate as a
+        // warning rather than an error, because a multi-branch hospital
+        // legitimately reuses codes across branches — so the refusal comes from
+        // the constraint, and must arrive as a refusal.
+        payload: { name: "Second Reception", code: "REC" },
+      });
+
+      expect(response.statusCode).toBe(409);
+      const body = response.json();
+      expect(body.error).not.toContain("Something went wrong");
+      // No schema disclosure: the column and constraint names stay in the log.
+      expect(JSON.stringify(body)).not.toContain("stations_branch_id");
+      expect(body.requestId).toBeDefined();
+    }, 60_000);
+
+    it("answers a malformed identifier with 400, not 500", async () => {
+      const response = await app.inject({
+        method: "GET",
+        url: "/api/v1/branches/not-a-uuid/visits",
+        headers: { cookie: admin.cookie },
+      });
+      expect(response.statusCode).toBe(400);
+    }, 60_000);
+
     it("refuses an action the caller's role does not permit", async () => {
       // The administrator role has admin.users, so roles can be written. Prove
       // the guard is live by asking for something no role grants.
