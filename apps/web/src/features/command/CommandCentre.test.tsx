@@ -2,18 +2,32 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { UserId } from "@qman/domain";
 import { CommandCentre } from "./CommandCentre.js";
-import { CURRENT_USER, ClinicStore } from "../../data/clinic-store.js";
+import type { ClinicStore } from "../../data/clinic-store.js";
 import { OperationsStore } from "../../data/operations-store.js";
 import { EventBus } from "../../data/event-bus.js";
-import { STATIONS } from "../../data/demo-clinic.js";
-import { BRANCH } from "../../data/config-store.js";
+import {
+  BRANCH_ID as BRANCH,
+  createFixture,
+  STATION_IDS,
+  USER_ID,
+  type Fixture,
+} from "../../test/api-fixture.js";
 
-function wire(): { clinic: ClinicStore; ops: OperationsStore; bus: EventBus } {
+/**
+ * The clinic comes from the API; operations telemetry is still browser-held,
+ * so it keeps its own bus.
+ */
+async function wire(): Promise<{
+  fixture: Fixture;
+  clinic: ClinicStore;
+  ops: OperationsStore;
+  bus: EventBus;
+}> {
+  const fixture = await createFixture();
   const bus = new EventBus();
-  const clinic = new ClinicStore().useBus(bus);
   const ops = new OperationsStore();
   ops.attachTo(bus);
-  return { clinic, ops, bus };
+  return { fixture, clinic: fixture.clinic, ops, bus };
 }
 
 function attention(): HTMLElement {
@@ -27,11 +41,16 @@ describe("Operational Command Centre", () => {
   let ops: OperationsStore;
   let bus: EventBus;
 
-  beforeEach(() => {
-    ({ clinic, ops, bus } = wire());
+  let fixture: Fixture;
+
+  beforeEach(async () => {
+    ({ clinic, ops, bus, fixture } = await wire());
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
   it("renders", () => {
     render(<CommandCentre store={clinic} operations={ops} />);
@@ -66,7 +85,7 @@ describe("Operational Command Centre", () => {
     expect(attention().textContent).toMatch(/pharmacy has nobody serving/i);
 
     act(() => {
-      clinic.callNext(STATIONS.pharmacy, CURRENT_USER);
+      clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     expect(attention().textContent).not.toMatch(/pharmacy has nobody serving/i);
@@ -152,7 +171,7 @@ describe("Operational Command Centre", () => {
     render(<CommandCentre store={clinic} operations={ops} />);
 
     act(() => {
-      clinic.callNext(STATIONS.pharmacy, CURRENT_USER);
+      clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     expect(ops.announcements[0]!.text).toMatch(/please proceed to Pharmacy/i);
@@ -169,7 +188,7 @@ describe("Operational Command Centre", () => {
     render(<CommandCentre store={clinic} operations={ops} />);
 
     act(() => {
-      clinic.callNext(STATIONS.pharmacy, CURRENT_USER);
+      clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     const card = screen
@@ -183,8 +202,8 @@ describe("Operational Command Centre", () => {
     render(<CommandCentre store={clinic} operations={ops} />);
 
     act(() => {
-      const current = clinic.worklist(STATIONS.consultation).current!;
-      clinic.route(current.visitId, STATIONS.laboratory, CURRENT_USER);
+      const current = clinic.worklist(STATION_IDS.consultation).current!;
+      clinic.route(current.visitId, STATION_IDS.laboratory, USER_ID);
     });
 
     const card = screen
@@ -209,7 +228,7 @@ describe("Operational Command Centre", () => {
 
     render(<CommandCentre store={clinic} operations={ops} />);
     act(() => {
-      clinic.callNext(STATIONS.pharmacy, UserId("user-doctor"));
+      clinic.callNext(STATION_IDS.pharmacy, UserId("user-doctor"));
     });
 
     expect(ops.audit.some((e) => /Called at Pharmacy/.test(e.summary))).toBe(true);
