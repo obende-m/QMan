@@ -4,6 +4,7 @@ import { UserId } from "@qman/domain";
 import { CommandCentre } from "./CommandCentre.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
 import { OperationsStore } from "../../data/operations-store.js";
+import { Notifier } from "../../runtime/notifier.js";
 import {
   BRANCH_ID as BRANCH,
   createFixture,
@@ -24,6 +25,25 @@ async function wire(): Promise<{
   const fixture = await createFixture();
   const ops = new OperationsStore(fixture.config);
   ops.attachToStream(fixture.stream);
+
+  // The notifier reads the same stream, so a call produces a delivery attempt
+  // exactly as it does in production.
+  const notifier = new Notifier({
+    notifications: {
+      permission: "granted",
+      requestPermission: async () => "granted",
+      show: async () => true,
+    },
+    operations: ops,
+    config: fixture.config,
+  });
+  notifier.attachToStream(fixture.stream, STATION_IDS.pharmacy);
+
+  // The patient waiting at Pharmacy is the one this suite calls, so their
+  // notification is the delivery attempt it asserts.
+  const atPharmacy = fixture.clinic.worklist(STATION_IDS.pharmacy).waiting[0];
+  if (atPharmacy) notifier.attachPatientToStream(fixture.stream, atPharmacy.visitId);
+
   return { fixture, clinic: fixture.clinic, ops };
 }
 

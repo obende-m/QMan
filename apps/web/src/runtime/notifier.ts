@@ -8,6 +8,7 @@ import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
 import { stationName, stationRoom } from "../data/clinic-projections.js";
+import type { StreamEventLike } from "../data/operations-store.js";
 import type { NotificationPort } from "./ports.js";
 
 /**
@@ -51,6 +52,92 @@ export class Notifier {
    * news, a stage completing is not. Anything more would train staff to
    * dismiss without reading.
    */
+  /**
+   * Staff notifications, from the server's event stream.
+   *
+   * The same path OperationsStore takes: the browser produces no domain events
+   * any more, so this reads the staff projection — type, station, ticket and a
+   * summary rendered once at write time.
+   *
+   * The projection carries no priority, so the "urgent patient waiting"
+   * variant cannot be distinguished here. It is one notification rather than
+   * two, which is the honest reading of what the wire says.
+   */
+  attachToStream(
+    stream: { onEvent: (listener: (event: StreamEventLike) => void) => () => void },
+    stationId: StationId,
+  ): () => void {
+    return stream.onEvent((event) => {
+      if (event.type !== "visit.queued") return;
+      if (event.stationId !== stationId) return;
+
+      void this.#deliver({
+        title: "New patient in your queue",
+        body: `${event.queueLabel ?? ""} joined ${stationName(
+          this.options.config.config,
+          stationId,
+        )}.`.trim(),
+        tag: `queue-${stationId}`,
+        requireInteraction: false,
+        visitId: event.visitId as VisitId | null,
+        recipient: "staff",
+      });
+    });
+  }
+
+  /**
+   * Patient notifications for one visit, from the same stream.
+   *
+   * Uses the announcement template so what a patient reads on their phone
+   * matches what is said aloud in the room (ADR-030). The wire carries no
+   * patient name, so `{name}` renders empty whatever the policy says.
+   */
+  attachPatientToStream(
+    stream: { onEvent: (listener: (event: StreamEventLike) => void) => () => void },
+    visitId: VisitId,
+  ): () => void {
+    return stream.onEvent((event) => {
+      if (event.visitId !== visitId) return;
+
+      const announcementEvent =
+        event.type === "visit.called"
+          ? "called"
+          : event.type === "visit.routed"
+            ? "routed"
+            : event.type === "visit.completed"
+              ? "completed"
+              : null;
+      if (announcementEvent === null) return;
+
+      const stationId = (event.stationId ?? "") as StationId;
+      const body = renderAnnouncement(
+        this.options.operations.announcementConfig,
+        announcementEvent,
+        {
+          ticket: event.queueLabel ?? "",
+          journeyCode: (event.correlationId ?? "") as never,
+          patientName: "",
+          stationName: stationName(this.options.config.config, stationId),
+          room: stationRoom(this.options.config.config, stationId),
+          hospitalName: this.options.config.config.profile.name,
+          namePolicy: "ticket_only",
+        },
+      );
+
+      const isTurn = event.type === "visit.called";
+      void this.#deliver({
+        title: isTurn ? "It's your turn" : "Your visit has moved on",
+        // One tag per visit: a recall replaces the previous notification
+        // rather than stacking a second one.
+        tag: `visit-${visitId}`,
+        body,
+        requireInteraction: isTurn,
+        visitId,
+        recipient: "patient",
+      });
+    });
+  }
+
   staffSubscriber(stationId: StationId): EventSubscriber {
     return {
       name: `staff-notifier:${stationId}`,
