@@ -279,17 +279,19 @@ describe("browser notifications", () => {
     const emergency = harness.clinic.visits.find(
       (visit) => visit.priority === "emergency",
     )!;
-    // The patient is told where they have been sent. Staff notifications fire
-    // on queueing; this asserts the routed patient's own notification.
     notifier.attachPatientToStream(harness.stream, emergency.id);
     await harness.clinic.recall(emergency.id, USER_ID);
-    await harness.clinic.route(emergency.id, STATIONS.laboratory, USER_ID);
 
-    // Routing a patient into the laboratory queues them there, and the station
-    // is told. The staff projection carries no priority, so this is one
-    // notification rather than an urgent variant of one.
+    /*
+     * Being called is the notification that must interrupt: the patient has to
+     * act on it now, and one they swipe away without reading is one they miss
+     * their turn to. Everything else on a visit is information rather than a
+     * summons, and does not hold the screen.
+     */
     await vi.waitFor(() => expect(shown.length).toBeGreaterThan(0));
-    expect(shown.some((n) => /your visit has moved on/i.test(n.title))).toBe(true);
+    const turn = shown.find((n) => /it's your turn/i.test(n.title))!;
+    expect(turn).toBeDefined();
+    expect(turn.requireInteraction).toBe(true);
   });
 
   /**
