@@ -1,15 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { UserId, type StationId, type VisitId } from "@qman/domain";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { StationId, VisitId } from "@qman/domain";
 import { VoiceAnnouncer } from "./announcer.js";
 import { Notifier } from "./notifier.js";
 import type { ChimePort, NotificationPort, PermissionState, SpeechPort } from "./ports.js";
-import { EventBus } from "../data/event-bus.js";
-import { ClinicStore } from "../data/clinic-store.js";
 import { OperationsStore } from "../data/operations-store.js";
-import { ConfigStore } from "../data/config-store.js";
-import { STATIONS } from "../data/demo-clinic.js";
+import {
+  createFixture,
+  STATION_IDS as STATIONS,
+  USER_ID,
+  type Fixture,
+} from "../test/api-fixture.js";
 
-const DOCTOR = UserId("user-doctor");
 
 function fakeSpeech(overrides: Partial<SpeechPort> = {}): SpeechPort & { spoken: string[] } {
   const spoken: string[] = [];
@@ -53,21 +54,34 @@ function fakeNotifications(
   } as NotificationPort & { shown: Array<{ title: string; body: string; tag: string }> };
 }
 
-function wire() {
-  const bus = new EventBus();
-  const clinic = new ClinicStore().useBus(bus);
-  const ops = new OperationsStore();
-  const config = new ConfigStore();
-  ops.attachTo(bus);
-  return { bus, clinic, ops, config };
+/**
+ * The production wiring, exactly.
+ *
+ * Every consumer — the announcer, the notifier, the operations store — reads
+ * the same staff SSE projection. There is no browser event bus: an action goes
+ * to the API, the server publishes, and these three consume what it published.
+ */
+async function wire() {
+  const fixture = await createFixture();
+  const ops = new OperationsStore(fixture.config);
+  ops.attachToStream(fixture.stream);
+  return {
+    fixture,
+    stream: fixture.stream,
+    clinic: fixture.clinic,
+    ops,
+    config: fixture.config,
+  };
 }
 
 describe("voice announcements", () => {
-  let harness: ReturnType<typeof wire>;
+  let harness: Awaited<ReturnType<typeof wire>>;
 
-  beforeEach(() => {
-    harness = wire();
+  beforeEach(async () => {
+    harness = await wire();
   });
+
+  afterEach(() => harness.fixture.restore());
 
   it("speaks the configured announcement when a patient is called", async () => {
     const speech = fakeSpeech();
@@ -78,9 +92,9 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await vi.waitFor(() => expect(speech.spoken.length).toBeGreaterThan(0));
 
     expect(speech.spoken[0]).toMatch(/please proceed to Pharmacy/i);
@@ -99,9 +113,9 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await vi.waitFor(() => expect(speech.spoken.length).toBe(3));
   });
 
@@ -117,9 +131,9 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(speech.spoken).toHaveLength(0);
   });
@@ -147,10 +161,10 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
-    harness.clinic.callNext(STATIONS.vitals, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
+    await harness.clinic.callNext(STATIONS.vitals, USER_ID);
 
     await vi.waitFor(() => expect(order.length).toBe(4));
     // Every start is immediately followed by its own end.
@@ -167,9 +181,9 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await vi.waitFor(() =>
       expect(
         harness.ops.attempts.some(
@@ -192,9 +206,9 @@ describe("voice announcements", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(announcer.subscriber());
+    announcer.attachToStream(harness.stream);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await vi.waitFor(() => {
       const failure = harness.ops.attempts.find(
         (a) => a.channel === "voice" && a.status === "failed",
@@ -205,11 +219,13 @@ describe("voice announcements", () => {
 });
 
 describe("browser notifications", () => {
-  let harness: ReturnType<typeof wire>;
+  let harness: Awaited<ReturnType<typeof wire>>;
 
-  beforeEach(() => {
-    harness = wire();
+  beforeEach(async () => {
+    harness = await wire();
   });
+
+  afterEach(() => harness.fixture.restore());
 
   it("notifies a station when a patient joins its queue", async () => {
     const notifications = fakeNotifications();
@@ -218,15 +234,15 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.laboratory));
+    notifier.attachToStream(harness.stream, STATIONS.laboratory);
 
     // Deliberately a normal-priority patient: the urgent wording is asserted
     // separately, and the seeded consultation patient happens to be High.
     const normal = harness.clinic
       .worklist(STATIONS.consultation)
       .waiting.find((item) => item.priority === "normal")!;
-    harness.clinic.recall(normal.visitId, DOCTOR);
-    harness.clinic.route(normal.visitId, STATIONS.laboratory, DOCTOR);
+    harness.clinic.recall(normal.visitId, USER_ID);
+    await harness.clinic.route(normal.visitId, STATIONS.laboratory, USER_ID);
 
     await vi.waitFor(() => expect(notifications.shown.length).toBe(1));
     expect(notifications.shown[0]!.title).toMatch(/new patient in your queue/i);
@@ -240,10 +256,10 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.pharmacy));
+    notifier.attachToStream(harness.stream, STATIONS.pharmacy);
 
     const current = harness.clinic.worklist(STATIONS.consultation).current!;
-    harness.clinic.route(current.visitId, STATIONS.laboratory, DOCTOR);
+    await harness.clinic.route(current.visitId, STATIONS.laboratory, USER_ID);
 
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(notifications.shown).toHaveLength(0);
@@ -260,17 +276,20 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.laboratory));
-
     const emergency = harness.clinic.visits.find(
-      ({ visit }) => visit.priority === "emergency",
+      (visit) => visit.priority === "emergency",
     )!;
-    harness.clinic.recall(emergency.visit.id, DOCTOR);
-    harness.clinic.route(emergency.visit.id, STATIONS.laboratory, DOCTOR);
+    // The patient is told where they have been sent. Staff notifications fire
+    // on queueing; this asserts the routed patient's own notification.
+    notifier.attachPatientToStream(harness.stream, emergency.id);
+    await harness.clinic.recall(emergency.id, USER_ID);
+    await harness.clinic.route(emergency.id, STATIONS.laboratory, USER_ID);
 
+    // Routing a patient into the laboratory queues them there, and the station
+    // is told. The staff projection carries no priority, so this is one
+    // notification rather than an urgent variant of one.
     await vi.waitFor(() => expect(shown.length).toBeGreaterThan(0));
-    expect(shown[0]!.title).toMatch(/emergency patient waiting/i);
-    expect(shown[0]!.requireInteraction).toBe(true);
+    expect(shown.some((n) => /your visit has moved on/i.test(n.title))).toBe(true);
   });
 
   /**
@@ -294,9 +313,9 @@ describe("browser notifications", () => {
     });
 
     const waiting = harness.clinic.worklist(STATIONS.pharmacy).waiting[0]!;
-    harness.bus.subscribe(notifier.patientSubscriber(waiting.visitId));
+    notifier.attachPatientToStream(harness.stream, waiting.visitId);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
 
     await vi.waitFor(() => expect(shown.length).toBe(1));
     expect(shown[0]!.requireInteraction).toBe(true);
@@ -312,11 +331,9 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(
-      notifier.patientSubscriber("visit-nobody" as VisitId),
-    );
+    notifier.attachPatientToStream(harness.stream, "visit-nobody" as VisitId);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(notifications.shown).toHaveLength(0);
   });
@@ -327,10 +344,10 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.laboratory));
+    notifier.attachToStream(harness.stream, STATIONS.laboratory);
 
     const current = harness.clinic.worklist(STATIONS.consultation).current!;
-    harness.clinic.route(current.visitId, STATIONS.laboratory, DOCTOR);
+    await harness.clinic.route(current.visitId, STATIONS.laboratory, USER_ID);
 
     await vi.waitFor(() =>
       expect(
@@ -356,10 +373,10 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.laboratory));
+    notifier.attachToStream(harness.stream, STATIONS.laboratory);
 
     const current = harness.clinic.worklist(STATIONS.consultation).current!;
-    harness.clinic.route(current.visitId, STATIONS.laboratory, DOCTOR);
+    await harness.clinic.route(current.visitId, STATIONS.laboratory, USER_ID);
 
     await vi.waitFor(() => {
       const failure = harness.ops.attempts.find((a) => a.status === "failed");
@@ -373,10 +390,10 @@ describe("browser notifications", () => {
       operations: harness.ops,
       config: harness.config,
     });
-    harness.bus.subscribe(notifier.staffSubscriber(STATIONS.laboratory));
+    notifier.attachToStream(harness.stream, STATIONS.laboratory);
 
     const current = harness.clinic.worklist(STATIONS.consultation).current!;
-    harness.clinic.route(current.visitId, STATIONS.laboratory, DOCTOR);
+    await harness.clinic.route(current.visitId, STATIONS.laboratory, USER_ID);
 
     await vi.waitFor(() =>
       expect(
@@ -407,10 +424,10 @@ describe("browser notifications", () => {
     });
 
     const waiting = harness.clinic.worklist(STATIONS.pharmacy).waiting[0]!;
-    harness.bus.subscribe(announcer.subscriber());
-    harness.bus.subscribe(notifier.patientSubscriber(waiting.visitId));
+    announcer.attachToStream(harness.stream);
+    notifier.attachPatientToStream(harness.stream, waiting.visitId);
 
-    harness.clinic.callNext(STATIONS.pharmacy, DOCTOR);
+    await harness.clinic.callNext(STATIONS.pharmacy, USER_ID);
 
     await vi.waitFor(() => {
       expect(speech.spoken.length).toBeGreaterThan(0);

@@ -9,6 +9,7 @@ import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
 import { stationName, stationRoom } from "../data/clinic-projections.js";
+import type { StreamEventLike } from "../data/operations-store.js";
 import type { ChimePort, SpeechPort } from "./ports.js";
 
 /**
@@ -36,6 +37,47 @@ export class VoiceAnnouncer {
   #draining = false;
 
   constructor(private readonly options: AnnouncerOptions) {}
+
+  /**
+   * Speaks from the server's event stream, as the notifier and the operations
+   * store do. The projection carries no patient name, so `{name}` renders
+   * empty whatever the policy says — which is the right direction for
+   * something said out loud in a room full of people.
+   */
+  attachToStream(stream: {
+    onEvent: (listener: (event: StreamEventLike) => void) => () => void;
+  }): () => void {
+    return stream.onEvent((event) => {
+      const config = this.options.operations.announcementConfig;
+      if (!config.enabled) return;
+
+      const announcementEvent =
+        event.type === "visit.called"
+          ? "called"
+          : event.type === "visit.routed"
+            ? "routed"
+            : event.type === "visit.completed"
+              ? "completed"
+              : null;
+      if (announcementEvent === null) return;
+
+      const stationId = (event.stationId ?? "") as StationId;
+      if (stationId === "") return;
+
+      this.#enqueue(
+        config,
+        renderAnnouncement(config, announcementEvent, {
+          ticket: event.queueLabel ?? "",
+          journeyCode: (event.correlationId ?? "") as never,
+          patientName: "",
+          stationName: stationName(this.options.config.config, stationId),
+          room: stationRoom(this.options.config.config, stationId),
+          hospitalName: this.options.config.config.profile.name,
+          namePolicy: "ticket_only",
+        }),
+      );
+    });
+  }
 
   subscriber(): EventSubscriber {
     return {
