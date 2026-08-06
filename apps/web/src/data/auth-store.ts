@@ -70,9 +70,13 @@ export class AuthStore {
     this.#commit();
   }
 
-  async signIn(username: string, password: string): Promise<SignInResult> {
+  async signIn(
+    organization: string,
+    username: string,
+    password: string,
+  ): Promise<SignInResult> {
     try {
-      const response = await this.api.signIn(username, password);
+      const response = await this.api.signIn(organization, username, password);
       this.#user = response.user;
       this.#status = "signed_in";
       this.#commit();

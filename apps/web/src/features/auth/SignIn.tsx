@@ -19,6 +19,7 @@ export interface SignInProps {
 }
 
 export function SignIn({ auth, onSignedIn }: SignInProps) {
+  const [organization, setOrganization] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +33,7 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
     // One sign-in path. The provider chooser existed because the browser held
     // several identity providers; the server exposes one endpoint and decides
     // for itself which provider an account belongs to.
-    const result = await auth.signIn(username, password);
+    const result = await auth.signIn(organization, username, password);
 
     setBusy(false);
     if (result.ok) {
@@ -80,6 +81,28 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
           )}
 
           <div className="mt-4 space-y-4">
+            {/*
+              * The organization code, which selects the hospital.
+              *
+              * First, and remembered by the browser rather than the
+              * application: staff sign in to the same hospital every day, and
+              * asking them to retype it is the kind of friction that produces a
+              * sticky note on the monitor.
+              */}
+            <label className="block">
+              <span className={labelClass}>Organization code</span>
+              <input
+                className={cn(inputClass, "mt-1.5")}
+                value={organization}
+                onChange={(e) => setOrganization(e.target.value)}
+                name="organization"
+                autoComplete="organization"
+                autoCapitalize="none"
+                autoFocus
+                required
+              />
+            </label>
+
             <label className="block">
               <span className={labelClass}>Username</span>
               <input
@@ -88,7 +111,6 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
                 autoCapitalize="none"
-                autoFocus
                 required
               />
             </label>

@@ -27,8 +27,19 @@ export interface SignInResponse {
 export class AuthApi {
   constructor(private readonly client: ApiClient) {}
 
-  signIn(username: string, password: string): Promise<SignInResponse> {
-    return this.client.post<SignInResponse>("/api/v1/auth/login", { username, password });
+  /**
+   * The organization code selects the tenant.
+   *
+   * It is sent, resolved to an immutable id by the server, and then never used
+   * again — the session carries the id. The browser never learns it and never
+   * needs to: nothing on this side scopes anything by tenant.
+   */
+  signIn(organization: string, username: string, password: string): Promise<SignInResponse> {
+    return this.client.post<SignInResponse>("/api/v1/auth/login", {
+      organization,
+      username,
+      password,
+    });
   }
 
   me(): Promise<{ user: SignedInUser }> {
