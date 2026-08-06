@@ -398,6 +398,8 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
   const requests: Array<{ method: string; url: string; body: unknown }> = [];
   const originalFetch = globalThis.fetch;
   const streamListeners = new Set<(event: StreamEventLike) => void>();
+  /** Everything published so far, which is what the events endpoint returns. */
+  const published: StreamEventLike[] = [];
   const stream: FixtureStream = {
     onEvent: (listener) => {
       streamListeners.add(listener);
@@ -418,6 +420,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       queueLabel: entry?.queueLabel ?? null,
       summary: summaryFor(type, visit, current, stationId),
     };
+    published.push(event);
     for (const listener of [...streamListeners]) listener(event);
   };
 
@@ -449,6 +452,10 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
     }
     if (url.endsWith("/api/v1/roles") && method === "GET") {
       return respond(200, { roles });
+    }
+
+    if (url.includes("/api/v1/events") && method === "GET") {
+      return respond(200, { events: published });
     }
 
     if (url.includes("/visits") && method === "GET") {
@@ -541,7 +548,21 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
         });
       }
 
+      // The server records every accepted configuration change into the event
+      // log, which is where the audit screen reads it from.
+      const previous = current;
       current = next;
+      published.push({
+        type: adminEventType(url, body),
+        at: new Date().toISOString(),
+        visitId: null,
+        actorId: USER_ID,
+        correlationId: "session-1",
+        stationId: null,
+        queueLabel: null,
+        summary: adminSummary(url, body, previous, next),
+      });
+
       return respond(200, {
         configuration: current,
         warnings: problems.filter((p) => p.severity === "warning"),
@@ -638,6 +659,76 @@ function summaryFor(
     default:
       return `${visit.journeyCode}: ${type}`;
   }
+}
+
+/** Mirrors how the API names a configuration change. */
+function adminEventType(url: string, body: unknown): string {
+  const patch = (body ?? {}) as Record<string, unknown>;
+  if (url.includes("/stations")) {
+    if ("sla" in patch) return "config.sla_updated";
+    if ("queueNumber" in patch) return "config.queue_numbering_updated";
+    return "config.station_updated";
+  }
+  if (url.includes("/display-boards")) {
+    return "namePolicy" in patch
+      ? "config.privacy_updated"
+      : "config.display_board_updated";
+  }
+  if (url.includes("/workflows")) return "config.workflow_updated";
+  if (url.includes("/ticket-templates")) return "config.ticket_template_updated";
+  if (url.includes("/settings")) {
+    return "namePolicy" in patch
+      ? "config.privacy_updated"
+      : "config.ticket_template_updated";
+  }
+  return "config.profile_updated";
+}
+
+function adminSummary(
+  url: string,
+  body: unknown,
+  before: HospitalConfiguration,
+  after: HospitalConfiguration,
+): string {
+  const patch = (body ?? {}) as Record<string, unknown>;
+  const id = decodeURIComponent(url.split("/").pop() ?? "");
+
+  if (url.includes("/stations")) {
+    const station = after.stations.find((s) => s.id === id);
+    const name = station?.name ?? id;
+    if ("sla" in patch) {
+      return `SLA for ${name} set to ${Math.round(
+        (station?.sla.targetWaitMillis ?? 0) / 60_000,
+      )} minute target`;
+    }
+    if ("queueNumber" in patch) {
+      return `Queue numbering for ${name} set to "${station?.queueNumber.template ?? ""}" (${
+        station?.queueNumber.reset ?? ""
+      })`;
+    }
+    return `Station ${name} updated`;
+  }
+
+  if (url.includes("/display-boards")) {
+    const board = after.displayBoards.find((b) => b.id === id);
+    if ("namePolicy" in patch) {
+      return `Display board ${board?.name ?? id} name policy set to ${board?.namePolicy ?? ""}`;
+    }
+    return `Display board ${board?.name ?? id} updated`;
+  }
+
+  if (url.includes("/workflows")) {
+    return `Workflow ${after.workflows.find((w) => w.id === id)?.name ?? id} updated`;
+  }
+  if (url.includes("/ticket-templates")) {
+    return `Ticket template ${after.ticketTemplates.find((t) => t.id === id)?.name ?? id} updated`;
+  }
+  if (url.includes("/settings")) {
+    return before.defaults.namePolicy !== after.defaults.namePolicy
+      ? `Default patient name policy set to ${after.defaults.namePolicy}`
+      : "Default ticket template changed";
+  }
+  return "Hospital profile updated";
 }
 
 function signedInUser(permissions: readonly Permission[]) {

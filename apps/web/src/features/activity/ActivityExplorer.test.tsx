@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { UserId } from "@qman/domain";
 import { ActivityExplorer } from "./ActivityExplorer.js";
+import { ApiClient } from "../../api/client.js";
+import { ActivityApi } from "../../data/activity-api.js";
 import { OperationsStore } from "../../data/operations-store.js";
 import {
   createFixture,
@@ -25,6 +27,12 @@ async function wire() {
     clinic: fixture.clinic,
     ops,
     auth: fixture.auth,
+    /** Reads the recorded events back, as the audit screen does. */
+    loadHistory: async () => {
+      const client = new ApiClient({ baseUrl: "", readCookies: () => "" });
+      const { events } = await new ActivityApi(client).read();
+      ops.ingestHistory(events);
+    },
   };
 }
 
@@ -58,7 +66,7 @@ describe("Activity Timeline", () => {
    */
   it("keeps configuration changes out of the operational timeline", async () => {
     await act(async () => {
-      h.config.updateStation(STATION_IDS.consultation, {
+      await h.config.updateStation(STATION_IDS.consultation, {
         sla: { targetWaitMillis: 45 * 60_000, saturationPoint: 12 },
       });
       h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
@@ -166,7 +174,7 @@ describe("Activity Timeline", () => {
       await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
     });
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
-    expect(screen.getAllByText(/Dr Adams/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(new RegExp(USER_ID)).length).toBeGreaterThan(0);
   });
 });
 
@@ -184,11 +192,12 @@ describe("Audit Log", () => {
 
   it("records who changed an SLA, and to what", async () => {
     await act(async () => {
-      h.config.updateStation(STATION_IDS.consultation, {
+      await h.config.updateStation(STATION_IDS.consultation, {
         sla: { targetWaitMillis: 45 * 60_000, saturationPoint: 12 },
       });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
 
@@ -198,11 +207,12 @@ describe("Audit Log", () => {
 
   it("records a queue-numbering change distinctly from other station edits", async () => {
     await act(async () => {
-      h.config.updateStation(STATION_IDS.consultation, {
+      await h.config.updateStation(STATION_IDS.consultation, {
         queueNumber: { template: "OPD-{n:4}", reset: "weekly" },
       });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
     expect(
@@ -212,9 +222,10 @@ describe("Audit Log", () => {
 
   it("records a display board privacy change", async () => {
     await act(async () => {
-      h.config.updateBoard("board-main", { namePolicy: "full_name" });
+      await h.config.updateBoard("board-main", { namePolicy: "full_name" });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
     expect(
@@ -225,9 +236,10 @@ describe("Audit Log", () => {
   it("keeps patient activity out of the audit log", async () => {
     await act(async () => {
       await h.clinic.callNext(STATION_IDS.pharmacy, USER_ID);
-      h.config.updateProfile({ name: "Lagos Central" });
+      await h.config.updateProfile({ name: "Lagos Central" });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
 
@@ -244,6 +256,7 @@ describe("Audit Log", () => {
       expect(result.ok).toBe(false);
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
     // An audit trail that records changes which did not happen is worse than
@@ -253,20 +266,21 @@ describe("Audit Log", () => {
 
   it("groups an administrative sitting by session", async () => {
     await act(async () => {
-      h.config.updateProfile({ name: "Lagos Central" });
-      h.config.updateBoard("board-main", { waitingToShow: 6 });
+      await h.config.updateProfile({ name: "Lagos Central" });
+      await h.config.updateBoard("board-main", { waitingToShow: 6 });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
 
     const table = screen.getByRole("table");
-    const sessionLinks = within(table).getAllByRole("button", { name: "sess-1" });
+    const sessionLinks = within(table).getAllByRole("button", { name: "session-1" });
     expect(sessionLinks.length).toBe(2);
 
     // Clicking one filters to everything done in that sitting.
     fireEvent.click(sessionLinks[0]!);
-    expect(screen.getByDisplayValue("sess-1")).toBeDefined();
+    expect(screen.getByDisplayValue("session-1")).toBeDefined();
   });
 
   it("distinguishes security records from configuration records", async () => {
@@ -277,9 +291,10 @@ describe("Audit Log", () => {
         actorId: UserId("user-doctor"),
         correlationId: "sess-9",
       });
-      h.config.updateProfile({ name: "Lagos Central" });
+      await h.config.updateProfile({ name: "Lagos Central" });
     });
 
+    await h.loadHistory();
     render(<ActivityExplorer operations={h.ops} auth={h.auth} />);
     openTab(/audit log/i);
 

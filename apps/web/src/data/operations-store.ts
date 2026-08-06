@@ -5,6 +5,7 @@ import {
   assessPresence,
   channelHealth,
   matchesQuery,
+  categoryOf,
   renderAnnouncement,
   type JourneyCode,
   unhealthyDevices,
@@ -291,11 +292,30 @@ export class OperationsStore {
   attachToStream(stream: {
     onEvent: (listener: (event: StreamEventLike) => void) => () => void;
   }): () => void {
-    return stream.onEvent((event) => {
+    return stream.onEvent((event) => this.ingest(event));
+  }
+
+  /**
+   * Loads the events already recorded, through the same translation.
+   *
+   * History and live traffic are the same events at different ages, so they go
+   * through one interpretation. A second reader would be a second opinion
+   * about what an event means, and the two would disagree the first time
+   * either changed.
+   */
+  ingestHistory(events: readonly StreamEventLike[]): void {
+    for (const event of events) this.ingest(event);
+  }
+
+  ingest(event: StreamEventLike): void {
+    {
       const at = new Date(event.at);
 
       this.#log({
-        category: "operational",
+        // The domain decides which timeline an event belongs to. Hardcoding
+        // "operational" here filed every configuration change under activity
+        // and left the audit log empty.
+        category: categoryOf(event.type),
         type: event.type,
         summary: event.summary,
         actorId: (event.actorId as UserId | null) ?? null,
@@ -333,7 +353,7 @@ export class OperationsStore {
           spoken: false,
         });
       }
-    });
+    }
   }
 
   attachTo(bus: EventBus): () => void {
