@@ -210,6 +210,19 @@ export interface VisitPlan {
 
 let sequence = 0;
 
+/** Four symbols from the domain's own alphabet. */
+const CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+function journeyCodeBody(n: number): string {
+  let value = n + 1;
+  let body = "";
+  for (let i = 0; i < 4; i += 1) {
+    body = CODE_ALPHABET[value % CODE_ALPHABET.length] + body;
+    value = Math.floor(value / CODE_ALPHABET.length) + 7;
+  }
+  return body;
+}
+
 /**
  * Builds a visit by driving the aggregate, exactly as the server would.
  *
@@ -226,7 +239,9 @@ export function buildVisit(plan: VisitPlan, now: Date): Visit {
 
   const visit = Visit.create(
     {
-      journeyCode: `QM-${String(sequence % 9000 + 1000).padStart(4, "0")}` as never,
+      // The domain alphabet excludes I, L, O, U, 0 and 1, so a code built from
+      // plain digits is rejected by parseJourneyCode and never resolves.
+      journeyCode: `QM-${journeyCodeBody(sequence)}` as never,
       branchId: BRANCH_ID,
       workflowId: "55555555-0000-0000-0000-000000000001" as never,
       patient: {
@@ -296,6 +311,25 @@ export function defaultVisits(now = new Date()): Visit[] {
     buildVisit({ name: "Fatima Yusuf", path: [STATION_IDS.laboratory], state: "called", arrivedMinutesAgo: 12 }, now),
     buildVisit({ name: "Emeka Nwosu", path: [STATION_IDS.pharmacy], arrivedMinutesAgo: 8 }, now),
     buildVisit({ name: "Grace Adeyemi", path: [STATION_IDS.vitals], arrivedMinutesAgo: 5, priority: "emergency" }, now),
+    // A patient part-way through their journey, so a timeline has both a past
+    // and a future, and one whose visit is finished.
+    buildVisit(
+      {
+        name: "Bola Adewale",
+        path: [STATION_IDS.vitals, STATION_IDS.consultation],
+        arrivedMinutesAgo: 55,
+      },
+      now,
+    ),
+    buildVisit(
+      {
+        name: "Sade Johnson",
+        path: [STATION_IDS.consultation],
+        state: "completed",
+        arrivedMinutesAgo: 70,
+      },
+      now,
+    ),
   ];
 }
 
