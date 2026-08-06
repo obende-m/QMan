@@ -104,13 +104,13 @@ describe("Patient Journey Tracking", () => {
     const positionBefore = store.positionOf(waiting.id)!;
 
     // Clear the patient ahead of them so the queue advances.
-    act(() => {
+    await act(async () => {
       const current = store.worklist(stationId).current;
-      if (current) store.complete(current.visitId, USER_ID);
+      if (current) await store.complete(current.visitId, USER_ID);
       const next = store.worklist(stationId).waiting[0];
       if (next && next.visitId !== waiting.id) {
-        store.callNext(stationId, USER_ID);
-        store.complete(next.visitId, USER_ID);
+        await store.callNext(stationId, USER_ID);
+        await store.complete(next.visitId, USER_ID);
       }
     });
 
@@ -126,8 +126,8 @@ describe("Patient Journey Tracking", () => {
     const stationId = waiting.currentStationId!;
     // Clear the station, then call this patient up.
     const current = store.worklist(stationId).current;
-    if (current) store.complete(current.visitId, USER_ID);
-    store.recall(waiting.id, USER_ID);
+    if (current) await store.complete(current.visitId, USER_ID);
+    await store.recall(waiting.id, USER_ID);
 
     render(
       <PatientJourney store={store} initialCode={waiting.journeyCode} />,
@@ -236,10 +236,10 @@ describe("Patient Journey Tracking", () => {
     );
     const stationId = waiting.currentStationId!;
 
-    act(() => {
+    await act(async () => {
       const current = store.worklist(stationId).current;
-      if (current) store.complete(current.visitId, USER_ID);
-      store.recall(waiting.id, USER_ID);
+      if (current) await store.complete(current.visitId, USER_ID);
+      await store.recall(waiting.id, USER_ID);
     });
 
     expect(screen.getByText(/it's your turn/i)).toBeDefined();
