@@ -11,6 +11,8 @@ import { ManagerDashboard } from "./features/manager/ManagerDashboard.js";
 import { CommandCentre } from "./features/command/CommandCentre.js";
 import { ActivityExplorer } from "./features/activity/ActivityExplorer.js";
 import { profileFor } from "./features/station/station-profiles.js";
+import { operationsStore } from "./data/operations-store.js";
+import { stores } from "./data/runtime-stores.js";
 import { useAuth } from "./data/useAuth.js";
 import { useConfig } from "./data/useConfig.js";
 import { useClinic } from "./data/useClinic.js";
@@ -84,6 +86,13 @@ export function App() {
   const user = auth.currentUser();
   const clinic = useClinic();
   const connection = useConnectionMonitor({ signal: clinic.heartbeat });
+
+  /**
+   * Operational telemetry reads the same stream the clinic does. Wired here
+   * rather than in the composition root, which would import the operations
+   * store and close a cycle back through the configuration it depends on.
+   */
+  useEffect(() => operationsStore.attachToStream(stores.stream), []);
 
   /** Resolves the session the cookie already carries, then the configuration. */
   useEffect(() => {
