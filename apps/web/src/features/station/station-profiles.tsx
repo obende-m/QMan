@@ -57,9 +57,10 @@ const PROFILES: Record<string, StationProfile> = {
     startLabel: "Start dispensing",
     icon: <Pill className="size-4" />,
   },
-  // Radiology has no station seeded in the demo clinic yet; the profile is here
-  // to show that vocabulary is pure configuration.
-  "st-radiology": {
+  // Keyed by code like every other entry. This was "st-radiology" — an
+  // identifier from the demo clinic that no longer exists — which `profileFor`
+  // could never match, since it uppercases the code it is given.
+  RAD: {
     activeLabel: "Now imaging",
     timerLabel: "Time in imaging",
     startLabel: "Start imaging",

@@ -827,7 +827,7 @@ export function registerConfigWriteRoutes(
     await applyRoleChange(deps, request, reply, {
       precondition: async (tx) => {
         const held = blockedBy(
-          await deps.writer.roleUsage(tx, id),
+          await deps.writer.roleUsage(tx, tenantOf(request), id),
           `roles.${id}`,
           "Move them to another role first.",
         );

@@ -745,7 +745,7 @@ suite("persistence against real PostgreSQL", () => {
     });
 
     it("counts the users holding a role", async () => {
-      const usage = await db.transaction((tx) => writer.roleUsage(tx, ROLE));
+      const usage = await db.transaction((tx) => writer.roleUsage(tx, HOSPITAL, ROLE));
       expect(usage.find((u) => u.singular === "user")?.count).toBe(1);
     });
   });

@@ -37,6 +37,7 @@ import {
   requireSignedIn,
   SESSION_COOKIE,
   type GuardDependencies,
+  tenantOf,
 } from "./authorization.js";
 import { CSRF_COOKIE, issueCsrfToken, verifyCsrf } from "./csrf.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
@@ -483,6 +484,7 @@ export function buildServer(options: ServerOptions): FastifyInstance {
       reply.raw.write(formatHeartbeat(now()));
 
       const unsubscribe = stream.subscribe({
+        hospitalId: tenantOf(request),
         branchId,
         audience: "staff",
         send: (chunk) => reply.raw.write(chunk),

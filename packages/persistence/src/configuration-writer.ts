@@ -50,7 +50,7 @@ export interface EntityUsage {
 export interface ConfigurationWriter {
   stationUsage(tx: SqlExecutor, hospitalId: string, stationId: string): Promise<EntityUsage[]>;
   workflowUsage(tx: SqlExecutor, hospitalId: string, workflowId: string): Promise<EntityUsage[]>;
-  roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]>;
+  roleUsage(tx: SqlExecutor, hospitalId: string, roleId: string): Promise<EntityUsage[]>;
 
   createStation(
     tx: SqlExecutor,
@@ -155,10 +155,18 @@ export class PostgresConfigurationWriter implements ConfigurationWriter {
     ]);
   }
 
-  async roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]> {
+  async roleUsage(
+    tx: SqlExecutor,
+    hospitalId: string,
+    roleId: string,
+  ): Promise<EntityUsage[]> {
+    // Scoped like stationUsage and workflowUsage. Unscoped, this counted the
+    // holders of any role id, so a refusal reading "3 users" confirmed another
+    // organization's role was real and in use.
     const [row] = await tx.query<{ users: string }>(
-      `SELECT (SELECT count(*) FROM users WHERE role_id = $1)::text AS users`,
-      [roleId],
+      `SELECT (SELECT count(*) FROM users
+                WHERE role_id = $1 AND hospital_id = $2)::text AS users`,
+      [roleId, hospitalId],
     );
     return blocking([
       { singular: "user", plural: "users", count: Number(row?.users ?? 0) },

@@ -49,6 +49,19 @@ export type Audience = "staff" | "public";
 export const HEARTBEAT_MILLIS = 20_000;
 
 export interface StreamSubscriber {
+  /**
+   * The organization this subscriber may hear from. Never null.
+   *
+   * `branchId` is a narrowing *within* an organization and is null for staff
+   * who work across branches — which meant a null branch was treated as "every
+   * branch", and `publish` had no other filter, so such a subscriber received
+   * every organization's events live. The staff projection carries the visit
+   * id, the Journey Code and a rendered summary, so that was a continuous feed
+   * of other hospitals' patient activity.
+   *
+   * The tenant is therefore separate, required, and checked first.
+   */
+  readonly hospitalId: string;
   readonly branchId: string | null;
   readonly audience: Audience;
   send(chunk: string): void;
@@ -176,6 +189,9 @@ export class EventStream {
     let boardChunk: string | null = null;
 
     for (const subscriber of [...this.#subscribers]) {
+      // The tenant boundary, checked before anything else and never optional.
+      if (subscriber.hospitalId !== record.hospitalId) continue;
+      // A narrowing within the organization, which may legitimately be absent.
       if (subscriber.branchId !== null && subscriber.branchId !== record.branchId) continue;
 
       if (subscriber.audience === "public") {

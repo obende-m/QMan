@@ -71,6 +71,8 @@ const PLATFORM_PASSWORD = "a platform passphrase that is long enough";
 let pool: pg.Pool;
 let db: Database;
 let app: FastifyInstance;
+/** The same stream instance the server publishes to, so a test can listen. */
+let liveStream: EventStream;
 
 /** A signed-in caller: the cookies a browser would hold, and its CSRF token. */
 interface Caller {
@@ -113,6 +115,7 @@ suite("QMan end to end, against real PostgreSQL", () => {
     await migrate(db, loadMigrations());
 
     const now = () => new Date();
+    liveStream = new EventStream();
     const writer = new PostgresConfigurationWriter();
     const visitDependencies = { clock: { now }, ids: { next: randomUUID } };
     const visits = new PostgresVisitRepository(db, visitDependencies);
@@ -157,7 +160,7 @@ suite("QMan end to end, against real PostgreSQL", () => {
         users: platformUsers,
         provisioning: new PostgresOrganizationProvisioning(db, writer),
       },
-      stream: new EventStream(),
+      stream: liveStream,
       secureCookies: true,
       allowedOrigins: [ORIGIN],
       logger: createLogger({ write: (line) => { if (line.includes("unhandled")) console.error(line); } }),
@@ -780,6 +783,37 @@ suite("QMan end to end, against real PostgreSQL", () => {
         expect(after.workflows).toHaveLength(before.workflows.length);
         expect(after.displayBoards).toHaveLength(before.displayBoards.length);
       }, 120_000);
+
+      /**
+       * The live feed, which no repository fix could have covered.
+       *
+       * `/stream` subscribed with the session's branch, and a null branch meant
+       * "every branch" with nothing establishing which organization's. An
+       * administrator not pinned to a branch — the default for a new
+       * organization — received every hospital's events as they happened.
+       */
+      it("cannot subscribe to Beta's event stream", async () => {
+        const chunks: string[] = [];
+        const subscriber = {
+          hospitalId: alpha.id,
+          branchId: null,
+          audience: "staff" as const,
+          send: (chunk: string) => chunks.push(chunk),
+        };
+        const unsubscribe = liveStream.subscribe(subscriber);
+
+        // Admit a patient at Beta while Alpha is listening with no branch.
+        await app.inject({
+          method: "POST",
+          url: "/api/v1/visits",
+          headers: writing(beta.admin),
+          payload: { patientName: "Streamed Beta Patient", stationId: beta.stations["REC"] },
+        });
+
+        unsubscribe();
+        expect(chunks.join("")).not.toContain("Streamed Beta Patient");
+        expect(chunks.join("")).toEqual("");
+      }, 60_000);
 
       it("cannot enumerate Beta's existence through a station usage probe", async () => {
         // A delete refused for "3 workflows use this station" would confirm the

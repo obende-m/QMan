@@ -59,6 +59,28 @@ export function createStores(baseUrl: string = API_BASE_URL): Stores {
     void clinic.invalidate();
   });
 
+  /**
+   * A reconnect re-reads, because the gap is not replayed.
+   *
+   * The stream carries no `Last-Event-ID` handling, so events that happened
+   * while the connection was down are simply never delivered. Without this, a
+   * surface that lost its connection for five minutes reconnected and kept
+   * showing pre-outage state until the next event happened to arrive — which
+   * in a quiet clinic, or on a laboratory board late in the day, can be a very
+   * long time. A waiting room reads that screen as current.
+   *
+   * Only on the transition back to trustworthy: invalidating on every snapshot
+   * would re-read on each heartbeat.
+   */
+  let trustworthy = true;
+  stream.onConnection((snapshot) => {
+    const wasTrustworthy = trustworthy;
+    trustworthy = snapshot.trustworthy;
+    if (!wasTrustworthy && snapshot.trustworthy) {
+      void clinic.invalidate();
+    }
+  });
+
 
   return { auth, config, clinic, stream, activity };
 }
