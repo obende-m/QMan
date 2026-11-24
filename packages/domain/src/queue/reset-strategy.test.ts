@@ -129,3 +129,16 @@ describe("ordinal allocation", () => {
     expect(allocator.next("st-lab", day2)).toBe(2);
   });
 });
+
+describe("reset periods in the hospital's time zone", () => {
+  it("restarts a daily series at the hospital's midnight, not the server's", () => {
+    // 23:30 UTC on 9 March is already 00:30 on 10 March in Lagos (UTC+1).
+    const late = new Date(Date.UTC(2026, 2, 9, 23, 30));
+    expect(resetPeriodKey(config("daily"), late, "Africa/Lagos")).toBe("2026-03-10");
+    expect(resetPeriodKey(config("daily"), late, "UTC")).toBe("2026-03-09");
+  });
+
+  it("keeps working when the configured zone is unknown", () => {
+    expect(resetPeriodKey(config("daily"), new Date(2026, 2, 9, 12), "Not/AZone")).toBe("2026-03-09");
+  });
+});

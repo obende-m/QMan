@@ -1,0 +1,61 @@
+# Verification on every push and pull request.
+#
+# Two jobs, because they answer different questions. `verify` is what every
+# developer runs locally: types, builds, unit and component tests. `database`
+# runs the PostgreSQL suites — migrations, repositories, tenancy and the end to
+# end patient journey — which skip silently without DATABASE_URL and so must
+# be run somewhere that provides one. Nothing here deploys or publishes.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run verify
+
+  database:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # The oldest supported major, so nothing newer is relied on by accident.
+        image: postgres:13
+        env:
+          POSTGRES_USER: qman
+          POSTGRES_PASSWORD: qman_ci_only
+          POSTGRES_DB: qman_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qman -d qman_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # A throwaway database inside the job. Not a secret: it exists only for
+      # the length of this run and is reachable only from it.
+      DATABASE_URL: postgres://qman:qman_ci_only@localhost:5432/qman_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --build
+      - run: npm run verify:db -w @qman/api

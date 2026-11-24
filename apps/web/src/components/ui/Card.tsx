@@ -12,8 +12,11 @@ export function Card({ children, className, flat = false }: CardProps) {
   return (
     <section
       className={cn(
-        "rounded-lg border border-outline-variant bg-surface-container-lowest",
-        flat ? "" : "shadow-card",
+        // Glass by default; `flat` is a nested panel inside one, which must not
+        // stack a second blur on the first.
+        flat
+          ? "rounded-lg border border-outline-variant/70 bg-surface-container-lowest/60"
+          : "glass rounded-xl",
         className,
       )}
     >

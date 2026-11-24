@@ -65,10 +65,23 @@ export type Guarded =
  * and reads have nothing to protect. The clients that matter — the ones firing
  * state changes from a reception desk — send one.
  */
+export interface GuardOptions {
+  /**
+   * Answers a replay instead of sending the stored response verbatim.
+   *
+   * For a route whose real response cannot be stored. Admission is the case:
+   * its response carries a tracking token, and storing that would put a
+   * working credential in a table kept for a day. It stores only the visit id
+   * and rebuilds the answer here.
+   */
+  readonly onReplay?: (statusCode: number, stored: unknown) => Promise<void>;
+}
+
 export async function guard(
   deps: IdempotencyDependencies,
   request: FastifyRequest,
   reply: FastifyReply,
+  options: GuardOptions = {},
 ): Promise<Guarded> {
   const key = readKey(request);
   if (key === null) return { proceed: true, key: null };
@@ -87,13 +100,15 @@ export async function guard(
         hospitalId,
         path: request.url,
       });
-      // The original response, verbatim. The header lets a client tell that
-      // nothing new happened, which matters when the two answers would
-      // otherwise be indistinguishable.
-      void reply
-        .header("Idempotent-Replay", "true")
-        .status(claim.statusCode)
-        .send(claim.response);
+      // The header lets a client tell that nothing new happened, which matters
+      // when the two answers would otherwise be indistinguishable.
+      void reply.header("Idempotent-Replay", "true");
+      if (options.onReplay) {
+        await options.onReplay(claim.statusCode, claim.response);
+        return { proceed: false };
+      }
+      // The original response, verbatim.
+      void reply.status(claim.statusCode).send(claim.response);
       return { proceed: false };
 
     case "in_flight":

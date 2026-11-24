@@ -16,6 +16,8 @@ export interface SignedInUser {
   readonly branchId: string | null;
   readonly branchIds: readonly string[];
   readonly permissions: readonly Permission[];
+  /** The password is temporary and must be replaced before anything else. */
+  readonly passwordChangeRequired?: boolean;
 }
 
 export interface SignInResponse {
@@ -44,6 +46,10 @@ export class AuthApi {
 
   me(): Promise<{ user: SignedInUser }> {
     return this.client.get<{ user: SignedInUser }>("/api/v1/auth/me");
+  }
+
+  changePassword(currentPassword: string, newPassword: string): Promise<{ otherSessionsEnded: number }> {
+    return this.client.post("/api/v1/auth/password", { currentPassword, newPassword });
   }
 
   signOut(): Promise<void> {

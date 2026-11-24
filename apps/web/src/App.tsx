@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Megaphone, MonitorPlay } from "lucide-react";
+import { MonitorPlay } from "lucide-react";
 import type { StationId } from "@qman/domain";
 import { AppShell, type NavKey } from "./components/layout/AppShell.js";
 import { AnnouncerProvider } from "./components/ui/Announcer.js";
@@ -16,8 +16,10 @@ import { stores } from "./data/runtime-stores.js";
 import { useAuth } from "./data/useAuth.js";
 import { useConfig } from "./data/useConfig.js";
 import { useClinic } from "./data/useClinic.js";
+import { setStaffDirectory } from "./data/clinic-projections.js";
 import { useConnectionMonitor } from "./components/ui/ConnectionStatus.js";
 import { SignIn } from "./features/auth/SignIn.js";
+import { ChangePassword } from "./features/auth/ChangePassword.js";
 import { AdminPortal } from "./features/admin/AdminPortal.js";
 
 /** Shown while a gate is resolving. Deliberately plain: it is not a screen. */
@@ -83,6 +85,8 @@ export function App() {
    * be configured.
    */
   const [stationId, setStationId] = useState<StationId | null>(null);
+  /** A journey opened from the search box, shown in the Activity Explorer. */
+  const [journey, setJourney] = useState<string | undefined>(undefined);
   const user = auth.currentUser();
   const clinic = useClinic();
   const connection = useConnectionMonitor({ signal: clinic.heartbeat });
@@ -111,6 +115,15 @@ export function App() {
     if (branchId === undefined) return;
 
     void (async () => {
+      // Names before visits, so the first render of a workload panel already
+      // has them. A failure leaves ids showing, which is honest.
+      if (auth.can("reports.view")) {
+        try {
+          setStaffDirectory((await stores.administration.staff()).staff);
+        } catch {
+          /* ids it is */
+        }
+      }
       await clinic.load(branchId);
 
       /*
@@ -130,7 +143,7 @@ export function App() {
        */
       stores.stream.start();
     })();
-  }, [clinic, config, config.status, user]);
+  }, [auth, clinic, config, config.status, user]);
 
   /** Opens the first workspace station the hospital actually has. */
   useEffect(() => {
@@ -162,6 +175,11 @@ export function App() {
     return <SignIn auth={auth} onSignedIn={() => setActive("reception")} />;
   }
 
+  // The server refuses everything else until a temporary password is replaced.
+  if (user.passwordChangeRequired === true) {
+    return <ChangePassword auth={auth} required />;
+  }
+
   /**
    * Nothing renders until the hospital is known.
    *
@@ -190,7 +208,18 @@ export function App() {
         onSignOut={() => auth.signOut()}
         connection={connection}
         active={active}
-        onNavigate={setActive}
+        onNavigate={(key) => {
+          if (key === "activity") setJourney(undefined);
+          setActive(key);
+        }}
+        {...(auth.can("reports.view")
+          ? {
+              onSearch: (query: string) => {
+                setJourney(query.toUpperCase());
+                setActive("activity");
+              },
+            }
+          : {})}
         primaryAction={
           <div className="flex items-center gap-2">
             {/* The board and tracker are separate applications, so these are
@@ -208,9 +237,6 @@ export function App() {
             >
               Display Board
             </Button>
-            {active === "reception" && (
-              <Button icon={<Megaphone className="size-4" />}>Call Next</Button>
-            )}
           </div>
         }
       >
@@ -251,7 +277,12 @@ export function App() {
           />
         )}
 
-        {active === "activity" && <ActivityExplorer />}
+        {active === "activity" && (
+          <ActivityExplorer
+            key={journey ?? "all"}
+            {...(journey !== undefined ? { initialCorrelationId: journey } : {})}
+          />
+        )}
 
         {active === "admin" && <AdminPortal />}
       </AppShell>
@@ -279,7 +310,7 @@ function StationSwitcher({
     <div
       role="tablist"
       aria-label="Station"
-      className="flex flex-wrap gap-1 rounded-md border border-outline-variant bg-surface-container-low p-1"
+      className="glass-subtle flex flex-wrap gap-1 rounded-xl p-1"
     >
       {config.workspaceStations().map((station) => {
         const id = station.id;
@@ -294,7 +325,7 @@ function StationSwitcher({
             className={cn(
               "flex items-center gap-2 rounded px-3 py-2 text-body-sm font-semibold transition-colors",
               selected
-                ? "bg-surface-container-lowest text-primary shadow-card"
+                ? "bg-surface-container-lowest/90 text-primary shadow-card"
                 : "text-on-surface-variant hover:bg-surface-container-high",
             )}
           >

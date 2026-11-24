@@ -199,6 +199,15 @@ export interface TicketContext {
   readonly logoUrl: string | null;
   /** Drives the `if_multiple_branches` condition. */
   readonly branchCount: number;
+  /**
+   * The visit's tracking token, when the ticket is printed for a real visit.
+   *
+   * Encoded in the QR code instead of the Journey Code. The code is four
+   * characters from a small alphabet and is printed in plain sight; the token
+   * is long and random, so a QR photographed over someone's shoulder is the
+   * only way to obtain one.
+   */
+  readonly trackingToken?: string | null;
 }
 
 const TOKEN = /\{(\w+)\}/g;
@@ -241,9 +250,13 @@ export function renderTicketText(
 export function trackingUrlFor(
   template: TicketTemplate,
   journeyCode: JourneyCode,
+  trackingToken?: string | null,
 ): string {
   const base = template.trackingUrl.trim() || "/track.html";
   const separator = base.includes("?") ? "&" : "?";
+  // The token when there is one. The Journey Code only for previews in the
+  // administration portal, where there is no visit and so no token.
+  if (trackingToken) return `${base}${separator}t=${encodeURIComponent(trackingToken)}`;
   return `${base}${separator}code=${encodeURIComponent(journeyCode)}`;
 }
 
@@ -311,7 +324,7 @@ export function renderTicket(
         lines.push({
           element,
           label: null,
-          value: trackingUrlFor(template, context.journeyCode),
+          value: trackingUrlFor(template, context.journeyCode, context.trackingToken),
         });
         break;
       case "visitTime":

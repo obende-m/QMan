@@ -13,8 +13,6 @@ export type VisitCreated = DomainEventEnvelope<
   {
     journeyCode: JourneyCode;
     workflowId: WorkflowId;
-    patientName: string;
-    hospitalNumber: string | null;
     priority: Priority;
   }
 >;

@@ -51,9 +51,31 @@ describe("Visit aggregate", () => {
     expect(events.map((e) => e.type)).toEqual(["visit.created"]);
     expect(events[0]!.payload).toMatchObject({
       journeyCode: "QM-8F4K",
-      patientName: "Amara Okafor",
       priority: "normal",
     });
+  });
+
+  it("keeps the patient's identity out of the event it records", () => {
+    const visit = newVisit(deps);
+    const [created] = visit.pullEvents();
+    const text = JSON.stringify(created!.payload);
+    expect(text).not.toContain("Amara");
+    expect(text).not.toContain("HN-40128");
+  });
+
+  it("refuses a priority outside the recognised set", () => {
+    expect(() =>
+      Visit.create(
+        {
+          journeyCode: parseJourneyCode("QM-8F4K"),
+          branchId: BRANCH,
+          workflowId: WorkflowId("wf-opd"),
+          patient: { name: "Amara Okafor", hospitalNumber: null, phone: null },
+          priority: "urgent" as never,
+        },
+        deps,
+      ),
+    ).toThrow(ValidationError);
   });
 
   it("requires a patient name", () => {
@@ -127,13 +149,27 @@ describe("Visit aggregate", () => {
     const firstCall = visit.currentEntry!.calledAt;
 
     clock.advanceMinutes(2);
-    visit.call(RECEPTIONIST);
+    visit.recall(RECEPTIONIST);
 
     expect(visit.status).toBe("called");
     expect(visit.currentEntry!.callAttempts).toBe(2);
     // calledAt marks the first announcement, so "how long since first called"
     // stays meaningful across recalls.
     expect(visit.currentEntry!.calledAt).toEqual(firstCall);
+  });
+
+  it("does not turn a second call into a recall", () => {
+    const visit = newVisit(deps);
+    visit.enqueue(STATIONS.reception, ticket(1));
+    visit.call(RECEPTIONIST);
+    expect(() => visit.call(RECEPTIONIST)).toThrow(InvariantViolationError);
+    expect(visit.currentEntry!.callAttempts).toBe(1);
+  });
+
+  it("refuses to recall a patient who was never called", () => {
+    const visit = newVisit(deps);
+    visit.enqueue(STATIONS.reception, ticket(1));
+    expect(() => visit.recall(RECEPTIONIST)).toThrow(InvariantViolationError);
   });
 
   it("keeps a skipped patient in the queue rather than discarding them", () => {

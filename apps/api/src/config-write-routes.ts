@@ -54,8 +54,79 @@ export interface ConfigWriteDependencies {
 }
 
 /** Reads a field from a patch, leaving it alone when absent. */
+/**
+ * A request body field that does not have the shape of the value it replaces.
+ *
+ * Thrown from inside a change and answered as 422. Without it, `{"name": 42}`
+ * reached `validateHospitalConfiguration`, which called `.trim()` on a number
+ * and answered 500 — and a value that happened not to crash validation was
+ * written as whatever JSON type it arrived as.
+ */
+export class BodyFieldError extends Error {
+  constructor(readonly field: string) {
+    super(`"${field}" does not have the expected type.`);
+    this.name = "BodyFieldError";
+  }
+}
+
+/** Fields that may be cleared with null although they usually hold text. */
+const NULLABLE = new Set(["room", "supportPhone", "trackingUrl", "footer", "instructions", "manualEpoch"]);
+
+/**
+ * Optional keys a nested object may carry even when the current value omits
+ * them. The types mark them optional, so "absent from the current value" is
+ * not evidence they are unknown.
+ */
+const OPTIONAL_KEYS: Readonly<Record<string, readonly string[]>> = {
+  queueNumber: ["manualEpoch"],
+};
+
+/**
+ * Whether an incoming value has the shape of the one it replaces.
+ *
+ * Structural rather than a schema per route: the current value is the schema.
+ * Numbers must be finite, arrays must hold what the existing array holds,
+ * objects may carry only the keys the existing object has. Values are then
+ * judged by the domain's own validation, which can now rely on their types.
+ */
+function sameShape(value: unknown, current: unknown, key: string): boolean {
+  if (value === null) return current === null || NULLABLE.has(key);
+  if (current === null || current === undefined) {
+    return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+  }
+  if (typeof current === "number") return typeof value === "number" && Number.isFinite(value);
+  if (typeof current === "string" || typeof current === "boolean") return typeof value === typeof current;
+  if (Array.isArray(current)) {
+    if (!Array.isArray(value) || value.length > 500) return false;
+    const sample: unknown = current[0];
+    return value.every((item: unknown) =>
+      sample === undefined ? typeof item === "string" : sameShape(item, sample, key),
+    );
+  }
+  if (typeof current === "object") {
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    const expected = Object.keys(current as object);
+    const optional = OPTIONAL_KEYS[key] ?? [];
+    const given = Object.keys(value as object);
+    if (given.some((k) => !expected.includes(k) && !optional.includes(k))) return false;
+    for (const k of optional) {
+      const v = (value as Record<string, unknown>)[k];
+      if (!expected.includes(k) && v !== undefined && v !== null && typeof v !== "string") return false;
+    }
+    return expected.every((k) =>
+      k in (value as object)
+        ? sameShape((value as Record<string, unknown>)[k], (current as Record<string, unknown>)[k], k)
+        : true,
+    );
+  }
+  return false;
+}
+
 function patched<T>(body: Record<string, unknown>, key: string, current: T): T {
-  return key in body ? (body[key] as T) : current;
+  if (!(key in body)) return current;
+  const value = body[key];
+  if (!sameShape(value, current, key)) throw new BodyFieldError(key);
+  return value as T;
 }
 
 function station(config: HospitalConfiguration, id: string): StationConfig | undefined {
@@ -89,16 +160,30 @@ async function applyChange(
     void reply.status(status).send(payload);
   };
 
-  const result = await deps.service.apply(
-    {
-      hospitalId: tenantOf(request),
-      actorId: authenticated.user.account.id,
-      sessionId: authenticated.session.id,
-      requestId: request.requestId,
-      branchId: authenticated.session.branchId,
-    },
-    change,
-  );
+  let result;
+  try {
+    result = await deps.service.apply(
+      {
+        hospitalId: tenantOf(request),
+        actorId: authenticated.user.account.id,
+        sessionId: authenticated.session.id,
+        requestId: request.requestId,
+        branchId: authenticated.session.branchId,
+      },
+      change,
+    );
+  } catch (error) {
+    if (error instanceof BodyFieldError) {
+      await respond(422, { error: error.message, field: error.field });
+      return;
+    }
+    throw error;
+  }
+
+  if (!result.ok && result.status === 404) {
+    await respond(404, { error: "That no longer exists." });
+    return;
+  }
 
   if (!result.ok) {
     deps.logger.warn("configuration change rejected", {
@@ -185,16 +270,30 @@ async function applyRoleChange(
     void reply.status(status).send(payload);
   };
 
-  const result = await deps.service.applyToRoles(
-    {
-      hospitalId: tenantOf(request),
-      actorId: authenticated.user.account.id,
-      sessionId: authenticated.session.id,
-      requestId: request.requestId,
-      branchId: authenticated.session.branchId,
-    },
-    change,
-  );
+  let result;
+  try {
+    result = await deps.service.applyToRoles(
+      {
+        hospitalId: tenantOf(request),
+        actorId: authenticated.user.account.id,
+        sessionId: authenticated.session.id,
+        requestId: request.requestId,
+        branchId: authenticated.session.branchId,
+      },
+      change,
+    );
+  } catch (error) {
+    if (error instanceof BodyFieldError) {
+      await respond(422, { error: error.message, field: error.field });
+      return;
+    }
+    throw error;
+  }
+
+  if (!result.ok && result.status === 404) {
+    await respond(404, { error: "That role no longer exists." });
+    return;
+  }
 
   if (!result.ok) {
     deps.logger.warn("role change rejected", {
@@ -287,6 +386,7 @@ export function registerConfigWriteRoutes(
     const { id } = request.params as { id: string };
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.stations.some((s) => s.id === id),
       precondition: async (tx) =>
         blockedBy(
           await deps.writer.stationUsage(tx, tenantOf(request), id),
@@ -313,6 +413,7 @@ export function registerConfigWriteRoutes(
     const body = (request.body ?? {}) as Record<string, unknown>;
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.stations.some((s) => s.id === id),
       apply: (config) => ({
         ...config,
         stations: config.stations.map((current) =>
@@ -423,6 +524,7 @@ export function registerConfigWriteRoutes(
     const find = (config: HospitalConfiguration) => config.workflows.find((w) => w.id === id);
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.workflows.some((w) => w.id === id),
       precondition: async (tx) =>
         blockedBy(
           await deps.writer.workflowUsage(tx, tenantOf(request), id),
@@ -451,6 +553,7 @@ export function registerConfigWriteRoutes(
       config.workflows.find((w) => w.id === id);
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.workflows.some((w) => w.id === id),
       apply: (config) => ({
         ...config,
         workflows: config.workflows.map((current) =>
@@ -534,6 +637,7 @@ export function registerConfigWriteRoutes(
         config.displayBoards.find((b) => b.id === id);
 
       await applyChange(deps, request, reply, {
+      target: (config) => config.displayBoards.some((b) => b.id === id),
         apply: (config) => ({
           ...config,
           displayBoards: config.displayBoards.filter((b) => b.id !== id),
@@ -557,6 +661,7 @@ export function registerConfigWriteRoutes(
       config.displayBoards.find((b) => b.id === id);
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.displayBoards.some((b) => b.id === id),
       apply: (config) => ({
         ...config,
         displayBoards: config.displayBoards.map((current) =>
@@ -662,6 +767,7 @@ export function registerConfigWriteRoutes(
       config.ticketTemplates.find((t) => t.id === id);
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.ticketTemplates.some((t) => t.id === id),
       apply: (config) => ({
         ...config,
         ticketTemplates: config.ticketTemplates.filter((t) => t.id !== id),
@@ -685,6 +791,7 @@ export function registerConfigWriteRoutes(
       config.ticketTemplates.find((t) => t.id === id);
 
     await applyChange(deps, request, reply, {
+      target: (config) => config.ticketTemplates.some((t) => t.id === id),
       apply: (config) => ({
         ...config,
         ticketTemplates: config.ticketTemplates.map((current) =>
@@ -789,6 +896,7 @@ export function registerConfigWriteRoutes(
     const body = (request.body ?? {}) as Record<string, unknown>;
 
     await applyRoleChange(deps, request, reply, {
+      target: (roles) => roles.some((role) => role.id === id),
       apply: (roles) =>
         roles.map((role) =>
           role.id === id
@@ -825,7 +933,17 @@ export function registerConfigWriteRoutes(
     const { id } = request.params as { id: string };
 
     await applyRoleChange(deps, request, reply, {
-      precondition: async (tx) => {
+      target: (roles) => roles.some((role) => role.id === id),
+      precondition: async (tx, roles) => {
+        if (roles.find((role) => role.id === id)?.isSystem) {
+          return [
+            {
+              path: `roles.${id}`,
+              message: "Built-in roles cannot be deleted. Copy the role and change the copy instead.",
+              severity: "error" as const,
+            },
+          ];
+        }
         const held = blockedBy(
           await deps.writer.roleUsage(tx, tenantOf(request), id),
           `roles.${id}`,
@@ -839,7 +957,7 @@ export function registerConfigWriteRoutes(
        * exist so a hospital cannot remove every administrative role and lock
        * itself out; the database refuses it too.
        */
-      apply: (roles) => roles.filter((role) => role.id !== id || role.isSystem),
+      apply: (roles) => roles.filter((role) => role.id !== id),
       persist: (tx) => deps.writer.deleteRole(tx, tenantOf(request), id),
       describe: (before) => ({
         type: "config.role_deleted",

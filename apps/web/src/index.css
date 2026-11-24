@@ -8,7 +8,48 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * The glass system.
+ *
+ * Three surface strengths over one quiet backdrop. Glass is a hierarchy device —
+ * the backdrop is the room, panels float in it, dialogs float above panels — and
+ * never a decoration on text: every surface that carries text is at least 72%
+ * opaque, which keeps body copy above WCAG AA against the backdrop's lightest
+ * and darkest points in both themes.
+ *
+ * Two fallbacks are not optional. A browser without backdrop-filter gets the
+ * same colours fully opaque, and so does anyone who asks the system for reduced
+ * transparency. Neither loses information; they lose depth.
+ */
 @layer base {
+  :root {
+    --glass-strong: 255 255 255 / 0.86;
+    --glass: 255 255 255 / 0.74;
+    --glass-subtle: 255 255 255 / 0.55;
+    --glass-border: 255 255 255 / 0.65;
+    --glass-edge: 15 23 42 / 0.08;
+    --glass-highlight: 255 255 255 / 0.9;
+    --glass-shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -6px rgb(15 23 42 / 0.10);
+    --glass-shadow-raised: 0 2px 4px rgb(15 23 42 / 0.05), 0 24px 48px -12px rgb(15 23 42 / 0.22);
+    --backdrop-a: 0 82 255 / 0.10;
+    --backdrop-b: 0 117 80 / 0.08;
+    --backdrop-c: 80 95 118 / 0.08;
+  }
+
+  .dark {
+    --glass-strong: 22 26 32 / 0.88;
+    --glass: 26 30 37 / 0.76;
+    --glass-subtle: 30 35 43 / 0.58;
+    --glass-border: 255 255 255 / 0.08;
+    --glass-edge: 0 0 0 / 0.35;
+    --glass-highlight: 255 255 255 / 0.06;
+    --glass-shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px -6px rgb(0 0 0 / 0.45);
+    --glass-shadow-raised: 0 2px 4px rgb(0 0 0 / 0.35), 0 24px 48px -12px rgb(0 0 0 / 0.6);
+    --backdrop-a: 120 150 255 / 0.10;
+    --backdrop-b: 78 222 163 / 0.06;
+    --backdrop-c: 183 200 225 / 0.05;
+  }
+
   html {
     font-family: Inter, system-ui, sans-serif;
     /* DESIGN.md: strict 4px baseline grid. */
@@ -17,6 +58,14 @@
 
   body {
     @apply bg-background text-on-background;
+    /* The room panels float in. Fixed, so it does not scroll with content and
+       glass reads as depth rather than as a moving pattern. */
+    background-image:
+      radial-gradient(60rem 40rem at 0% 0%, rgb(var(--backdrop-a)), transparent 60%),
+      radial-gradient(50rem 36rem at 100% 10%, rgb(var(--backdrop-b)), transparent 60%),
+      radial-gradient(70rem 50rem at 50% 110%, rgb(var(--backdrop-c)), transparent 60%);
+    background-attachment: fixed;
+    min-height: 100vh;
   }
 
   /* Focus is never removed, only restyled — staff navigate these screens by
@@ -38,8 +87,62 @@
 }
 
 @layer components {
-  /* Level 1 elevation from DESIGN.md: white surface, 1px border, soft shadow. */
+  .glass,
+  .glass-strong,
+  .glass-subtle {
+    border: 1px solid rgb(var(--glass-border));
+    box-shadow: var(--glass-shadow), inset 0 1px 0 rgb(var(--glass-highlight)),
+      0 0 0 1px rgb(var(--glass-edge));
+    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    backdrop-filter: blur(18px) saturate(160%);
+  }
+  .glass-strong {
+    background-color: rgb(var(--glass-strong));
+  }
+  .glass {
+    background-color: rgb(var(--glass));
+  }
+  .glass-subtle {
+    background-color: rgb(var(--glass-subtle));
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+    backdrop-filter: blur(12px) saturate(140%);
+  }
+  .glass-raised {
+    box-shadow: var(--glass-shadow-raised), inset 0 1px 0 rgb(var(--glass-highlight)),
+      0 0 0 1px rgb(var(--glass-edge));
+  }
+
+  /* Level 1 elevation, now glass. Kept as a name so existing markup upgrades. */
   .surface-card {
-    @apply rounded-lg border border-outline-variant bg-surface-container-lowest shadow-card;
+    @apply glass rounded-lg;
+  }
+
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass,
+    .glass-strong,
+    .glass-subtle {
+      @apply bg-surface-container-lowest;
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .glass,
+    .glass-strong,
+    .glass-subtle {
+      @apply bg-surface-container-lowest;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+  }
+
+  /* Forms share one control style so every screen's inputs look and behave
+     the same: generous target, visible border, unmistakable focus. */
+  .field {
+    @apply h-11 w-full rounded-md border border-outline-variant bg-surface-container-lowest/90 px-3
+      text-body-md text-on-surface placeholder:text-on-surface-variant/70
+      transition-colors focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30;
+  }
+  .field-label {
+    @apply mb-1.5 block text-body-sm font-semibold text-on-surface;
   }
 }

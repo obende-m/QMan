@@ -22,8 +22,8 @@ import {
   HOSPITAL,
   ORIGIN,
   PASSWORD,
-  primeConfigurationRead,
-  primeRolesRead,
+  primeConfigurationWrite,
+  primeRolesWrite,
   RecordingWriter,
   STATION,
   stationConfig,
@@ -93,7 +93,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "POST",
@@ -121,7 +121,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       await app.inject({
         method: "POST",
@@ -139,7 +139,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.display_boards"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "POST",
@@ -157,7 +157,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "POST",
@@ -184,7 +184,7 @@ describe("configuration lifecycle", () => {
         name: "Spare",
       } as never);
       const config = configuration();
-      primeConfigurationRead(db, {
+      primeConfigurationWrite(db, {
         ...config,
         stations: [...config.stations, spare],
       } as HospitalConfiguration);
@@ -212,7 +212,7 @@ describe("configuration lifecycle", () => {
         { singular: "workflow stage", plural: "workflow stages", count: 2 },
         { singular: "queue entry", plural: "queue entries", count: 40 },
       ];
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "DELETE",
@@ -234,7 +234,7 @@ describe("configuration lifecycle", () => {
       const app = server();
       const { cookie, csrf } = await signIn(app);
       writer.usage = [{ singular: "visit", plural: "visits", count: 1 }];
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "DELETE",
@@ -252,7 +252,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.settings"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       const response = await app.inject({
         method: "DELETE",
@@ -269,7 +269,7 @@ describe("configuration lifecycle", () => {
       const app = server();
       const { cookie, csrf } = await signIn(app);
       const config = configuration();
-      primeConfigurationRead(db, {
+      primeConfigurationWrite(db, {
         ...config,
         displayBoards: [
           {
@@ -304,7 +304,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.users"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeRolesRead(db, [ADMINISTRATOR]);
+      primeRolesWrite(db, [ADMINISTRATOR]);
 
       const response = await app.inject({
         method: "POST",
@@ -330,7 +330,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.users"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeRolesRead(db, [ADMINISTRATOR]);
+      primeRolesWrite(db, [ADMINISTRATOR]);
 
       const response = await app.inject({
         method: "PATCH",
@@ -349,7 +349,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.users"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeRolesRead(db, [
+      primeRolesWrite(db, [
         ADMINISTRATOR,
         { id: "role-nurse", name: "Nurse", description: "", permissions: [], isSystem: false },
       ]);
@@ -375,7 +375,7 @@ describe("configuration lifecycle", () => {
       const app = server();
       const { cookie, csrf } = await signIn(app);
       writer.usage = [{ singular: "user", plural: "users", count: 3 }];
-      primeRolesRead(db, [
+      primeRolesWrite(db, [
         ADMINISTRATOR,
         { id: "role-nurse", name: "Nurse", description: "", permissions: [], isSystem: false },
       ]);
@@ -395,7 +395,7 @@ describe("configuration lifecycle", () => {
       accounts.accounts.push(await account(["admin.users"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeRolesRead(db, [
+      primeRolesWrite(db, [
         ADMINISTRATOR,
         { id: "role-nurse", name: "Nurse", description: "", permissions: [], isSystem: false },
       ]);

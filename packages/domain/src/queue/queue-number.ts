@@ -64,7 +64,12 @@ export interface QueueNumberConfig {
 export function resetPeriodKey(
   config: QueueNumberConfig,
   at: Date,
+  timeZone?: string,
 ): string {
+  // Periods are the hospital's calendar, not the server's. A clinic in Lagos
+  // served from a machine set to UTC would otherwise restart its daily series
+  // at one in the morning, mid-way through a night shift.
+  if (timeZone !== undefined) at = wallClock(at, timeZone);
   switch (config.reset) {
     case "never":
       return "all";
@@ -76,6 +81,28 @@ export function resetPeriodKey(
       return `${at.getFullYear()}-${pad2(at.getMonth() + 1)}`;
     case "weekly":
       return isoWeek(at);
+  }
+}
+
+/**
+ * A Date whose local fields are the wall-clock date in `timeZone`.
+ *
+ * Only the calendar date is used, at noon, so a daylight-saving transition
+ * cannot move it across midnight. An unknown zone falls back to the instant as
+ * given rather than failing an admission.
+ */
+function wallClock(at: Date, timeZone: string): Date {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(at);
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+    return new Date(get("year"), get("month") - 1, get("day"), 12);
+  } catch {
+    return at;
   }
 }
 
@@ -148,6 +175,8 @@ export interface QueueNumberContext {
   readonly stationCode: string;
   readonly journeyCode: JourneyCode;
   readonly issuedAt: Date;
+  /** The hospital's IANA time zone, which defines its days, weeks and months. */
+  readonly timeZone?: string;
 }
 
 const TOKEN = /\{(\w+)(?::(\d+))?\}/g;
@@ -260,7 +289,7 @@ export function issueTicket(
   return {
     ordinal: context.ordinal,
     label: formatQueueNumber(config, context),
-    periodKey: resetPeriodKey(config, context.issuedAt),
+    periodKey: resetPeriodKey(config, context.issuedAt, context.timeZone),
   };
 }
 

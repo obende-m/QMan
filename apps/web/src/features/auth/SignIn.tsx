@@ -3,7 +3,6 @@ import { BriefcaseMedical, LogIn, TriangleAlert } from "lucide-react";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import type { AuthStore } from "../../data/auth-store.js";
-import { stores } from "../../data/runtime-stores.js";
 import { inputClass, labelClass } from "../../data/useConfig.js";
 
 /**
@@ -45,12 +44,12 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background px-5 py-10">
+    <main className="flex min-h-screen items-center justify-center px-5 py-10">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex items-center gap-3">
           <span
             aria-hidden="true"
-            className="grid size-11 shrink-0 place-items-center rounded bg-primary-container text-on-primary"
+            className="grid size-11 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary-container to-primary text-on-primary shadow-[0_8px_20px_-8px_rgb(0_62_199/0.6)]"
           >
             <BriefcaseMedical className="size-6" />
           </span>
@@ -58,15 +57,17 @@ export function SignIn({ auth, onSignedIn }: SignInProps) {
             <p className="text-headline-lg font-bold leading-none text-primary">
               QMan
             </p>
+            {/* The hospital's own name is not known until after sign-in: the
+                configuration that holds it is not readable anonymously. */}
             <p className="mt-1 text-body-sm text-on-surface-variant">
-              {stores.config.config.profile.name}
+              Patient Flow &amp; Operations
             </p>
           </div>
         </div>
 
         <form
           onSubmit={submit}
-          className="rounded-lg border border-outline-variant bg-surface-container-lowest p-gutter shadow-card"
+          className="glass glass-raised rounded-xl p-gutter"
         >
           <h1 className="text-title-md font-semibold text-on-surface">Sign in</h1>
 

@@ -89,6 +89,33 @@ export class AuthStore {
     }
   }
 
+  /**
+   * Replaces the signed-in user's password, then re-reads who they are so a
+   * cleared "change required" flag takes effect at once.
+   */
+  async changePassword(
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<{ ok: true } | { ok: false; message: string; problems: readonly string[] }> {
+    try {
+      await this.api.changePassword(currentPassword, newPassword);
+      await this.load();
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof ApiError) {
+        return {
+          ok: false,
+          message: error.message,
+          problems: error.problems.map((problem) => {
+            const value = problem as unknown;
+            return typeof value === "string" ? value : (value as { message: string }).message;
+          }),
+        };
+      }
+      return { ok: false, message: "Could not change the password. Try again.", problems: [] };
+    }
+  }
+
   async signOut(): Promise<void> {
     try {
       await this.api.signOut();

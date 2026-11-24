@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import {
   migrate,
   PostgresAccountRepository,
+  PostgresAdministrationRepository,
   PostgresBoardDirectory,
   PostgresConfigurationRepository,
   PostgresConfigurationWriter,
@@ -38,6 +39,7 @@ import { buildServer } from "./server.js";
 import { PlatformAuthService } from "./platform-auth.js";
 import { createPlatformLockoutStore } from "./platform-lockout.js";
 import { PostgresOrganizationProvisioning } from "./provisioning.js";
+import { scheduleMaintenance } from "./maintenance.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -52,15 +54,20 @@ async function main(): Promise<void> {
   });
 
   const now = (): Date => new Date();
+  const organizations = new PostgresOrganizationDirectory(db);
+  const accounts = new PostgresAccountRepository(db);
+  const lockoutRepository = new PostgresLockoutRepository(db);
+  const idempotencyRepository = new PostgresIdempotencyRepository(db);
+  const eventRepository = new PostgresEventRepository(db);
   const auth = new AuthService({
-    accounts: new PostgresAccountRepository(db),
+    organizations,
+    accounts,
     sessions: new PostgresSessionRepository(db),
-    lockouts: createDatabaseLockoutStore(new PostgresLockoutRepository(db), now),
+    lockouts: createDatabaseLockoutStore(lockoutRepository, now),
     now,
     newId: () => randomUUID(),
   });
 
-  const organizations = new PostgresOrganizationDirectory(db);
   const platformUsers = new PostgresPlatformUserRepository(db);
   const platformAuth = new PlatformAuthService({
     users: platformUsers,
@@ -86,14 +93,24 @@ async function main(): Promise<void> {
     stream,
     secureCookies: config.secureCookies,
     allowedOrigins: config.allowedOrigins,
+    trustProxy: config.trustProxy,
+    checkDatabase: async () => {
+      await db.query("SELECT 1");
+    },
+    securityEvents: eventRepository,
+    administration: {
+      db,
+      administration: new PostgresAdministrationRepository(db),
+      accounts,
+    },
     https: config.secureCookies,
     configuration: { configuration: new PostgresConfigurationRepository(db) },
     configurationWrites: {
       service: new ConfigurationService({ db, writer: configurationWriter, now }),
       writer: configurationWriter,
       idempotency: {
-        repository: new PostgresIdempotencyRepository(db),
-            logger,
+        repository: idempotencyRepository,
+        logger,
         now,
       },
     },
@@ -101,10 +118,11 @@ async function main(): Promise<void> {
       visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
       boards: new PostgresBoardDirectory(db),
       organizations,
+      configuration: new PostgresConfigurationRepository(db),
     },
     queue: {
       visits: visitRepository,
-      events: new PostgresEventRepository(db),
+      events: eventRepository,
       admission: {
         visits: visitRepository,
         allocator: new PostgresTicketAllocator(db),
@@ -114,12 +132,33 @@ async function main(): Promise<void> {
         hashToken,
       },
       idempotency: {
-        repository: new PostgresIdempotencyRepository(db),
-            logger,
+        repository: idempotencyRepository,
+        logger,
         now,
       },
     },
   });
+
+  /*
+   * Visit closure and pruning. Runs in this process: one more instance only
+   * means two runs that each lose the visits the other already closed, which
+   * the versioned save makes harmless.
+   */
+  const stopMaintenance = scheduleMaintenance(
+    {
+      visits: visitRepository,
+      stream,
+      logger,
+      now,
+      policy: {
+        closeAfterMinutes: config.visitClosure.closeAfterMinutes,
+        abandonAfterHours: config.visitClosure.abandonAfterHours,
+      },
+      idempotency: idempotencyRepository,
+      lockouts: lockoutRepository,
+    },
+    config.visitClosure.intervalSeconds * 1000,
+  );
 
   /**
    * Finish in-flight requests before exiting.
@@ -131,6 +170,7 @@ async function main(): Promise<void> {
   const stop = async (signal: string): Promise<void> => {
     logger.info("shutting down", { signal });
     try {
+      await stopMaintenance();
       await app.close();
       await close();
       process.exit(0);

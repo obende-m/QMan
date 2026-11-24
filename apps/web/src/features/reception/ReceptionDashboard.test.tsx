@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { ReceptionDashboard } from "./ReceptionDashboard.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
 import {
@@ -168,7 +168,7 @@ describe("Priority Patients", () => {
     // Drive it to completion through the real aggregate. A queued visit must be
     // called before it can be completed — the state machine allows no shortcut.
     if (urgent!.status === "queued") {
-      await store.recall(urgent!.id, USER_ID);
+      await store.call(urgent!.id, USER_ID);
     }
     expect((await store.complete(urgent!.id, USER_ID)).ok).toBe(true);
 
@@ -180,12 +180,101 @@ describe("Priority Patients", () => {
     // rendering an empty box. Completing them is the path the product offers:
     // changing a visit's priority has no endpoint.
     for (const visit of [...store.priorityVisits()]) {
-      if (visit.status === "queued") await store.recall(visit.id, USER_ID);
+      if (visit.status === "queued") await store.call(visit.id, USER_ID);
       await store.complete(visit.id, USER_ID);
     }
     render(<ReceptionDashboard store={store} />);
     expect(
       screen.getByText(/no emergency or urgent patients waiting/i),
     ).toBeDefined();
+  });
+});
+
+describe("Admission", () => {
+  let fixture: Fixture;
+
+  beforeEach(async () => {
+    fixture = await createFixture();
+  });
+
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
+
+  it("admits a patient from Reception and shows the ticket and Journey Code", async () => {
+    const before = fixture.clinic.visits.length;
+    render(<ReceptionDashboard store={fixture.clinic} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /create visit/i }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText(/patient name/i), { target: { value: "Chidi Eze" } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole("button", { name: /^admit$/i }));
+    });
+
+    expect(screen.getByText(/patient admitted/i)).toBeDefined();
+    expect(fixture.clinic.visits.length).toBe(before + 1);
+    const posted = fixture.requests.filter((r) => r.method === "POST" && r.url.endsWith("/api/v1/visits"));
+    expect(posted).toHaveLength(1);
+    expect(posted[0]!.body).toMatchObject({ patientName: "Chidi Eze" });
+  });
+
+  it("refuses to submit without a name, and sends nothing", async () => {
+    render(<ReceptionDashboard store={fixture.clinic} />);
+    fireEvent.click(screen.getByRole("button", { name: /create visit/i }));
+    await act(async () => {
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^admit$/i }));
+    });
+    expect(screen.getByRole("alert").textContent).toMatch(/patient's name/i);
+    expect(fixture.requests.some((r) => r.method === "POST" && r.url.endsWith("/api/v1/visits"))).toBe(false);
+  });
+
+  it("shows no invented comparison with yesterday", () => {
+    render(<ReceptionDashboard store={fixture.clinic} />);
+    expect(screen.queryByText(/vs yesterday/i)).toBeNull();
+  });
+});
+
+describe("Visit corrections", () => {
+  let fixture: Fixture;
+
+  /** The rows the Recent Visits table shows: the six newest. */
+  const shown = () =>
+    [...fixture.clinic.visits].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()).slice(0, 6);
+
+  beforeEach(async () => {
+    fixture = await createFixture();
+  });
+
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
+
+  it("changes a visit's priority through the server", async () => {
+    render(<ReceptionDashboard store={fixture.clinic} />);
+    const open = shown().find((v) => v.status !== "completed" && v.priority === "normal")!;
+    const select = screen.getByLabelText(`Priority for ${open.journeyCode}`);
+    await act(async () => {
+      fireEvent.change(select, { target: { value: "high" } });
+    });
+    expect(fixture.requests.some((r) => r.url.endsWith(`/visits/${open.id}/priority`))).toBe(true);
+    expect(fixture.clinic.find(open.id)!.priority).toBe("high");
+  });
+
+  it("cancels a visit only after a second, deliberate click, and sends the reason", async () => {
+    render(<ReceptionDashboard store={fixture.clinic} />);
+    const open = shown().find((v) => v.status !== "completed")!;
+    fireEvent.click(screen.getByRole("button", { name: `Cancel visit ${open.journeyCode}` }));
+    expect(fixture.requests.some((r) => r.url.endsWith("/cancel"))).toBe(false);
+
+    fireEvent.change(screen.getByLabelText(/reason for cancelling/i), { target: { value: "Left before triage" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /confirm cancel/i }));
+    });
+    const sent = fixture.requests.find((r) => r.url.endsWith(`/visits/${open.id}/cancel`));
+    expect(sent?.body).toEqual({ reason: "Left before triage" });
+    expect(fixture.clinic.find(open.id)!.status).toBe("cancelled");
   });
 });

@@ -23,6 +23,19 @@ export interface Config {
   readonly secureCookies: boolean;
   readonly allowedOrigins: readonly string[];
   readonly production: boolean;
+  /**
+   * Which reverse proxies may tell the server who the client is.
+   *
+   * `false` uses the socket's address. A number trusts that many hops of
+   * `X-Forwarded-For`; a list trusts only those addresses or ranges.
+   */
+  readonly trustProxy: false | number | readonly string[];
+  /** Visit lifecycle: how long a finished visit stays open, and when an unfinished one is abandoned. */
+  readonly visitClosure: {
+    readonly closeAfterMinutes: number;
+    readonly abandonAfterHours: number;
+    readonly intervalSeconds: number;
+  };
 }
 
 export class ConfigurationError extends Error {
@@ -179,9 +192,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     return parsed.origin;
   });
 
+  const trustProxy = parseTrustProxy(env["QMAN_TRUST_PROXY"]);
+
   return {
     allowedOrigins,
     production,
+    trustProxy,
+    visitClosure: {
+      closeAfterMinutes: integer(env, "QMAN_VISIT_CLOSE_AFTER_MINUTES", 120),
+      abandonAfterHours: integer(env, "QMAN_VISIT_ABANDON_AFTER_HOURS", 18),
+      intervalSeconds: integer(env, "QMAN_VISIT_CLOSURE_INTERVAL_SECONDS", 300),
+    },
     databaseUrl,
     // Most managed providers require TLS; a server on the hospital's own LAN
     // typically has none configured.
@@ -193,4 +214,46 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: level as LogLevel,
     secureCookies,
   };
+}
+
+/**
+ * Reads QMAN_TRUST_PROXY.
+ *
+ * Behind a load balancer every request arrives from the balancer's address, so
+ * the sign-in and Journey Code rate limits — keyed by client address — become
+ * one bucket shared by the whole hospital: twenty failed sign-ins anywhere lock
+ * out everyone for a minute. Trusting `X-Forwarded-For` fixes that, and
+ * trusting it from anyone breaks it worse: a client that can set the header
+ * chooses its own address and its own bucket.
+ *
+ * So the value says exactly whom to believe. `true` is refused for that
+ * reason — it believes every hop, which is the same as believing the client.
+ */
+export function parseTrustProxy(raw: string | undefined): false | number | readonly string[] {
+  if (raw === undefined || raw.trim() === "") return false;
+  const value = raw.trim().toLowerCase();
+  if (["false", "0", "no", "off"].includes(value)) return false;
+  if (["true", "yes", "on", "*"].includes(value)) {
+    throw new ConfigurationError(
+      "QMAN_TRUST_PROXY must name the proxies to trust — a hop count such as 1, or the proxy " +
+        "addresses such as 10.0.0.0/8 — not \"true\". Trusting every hop lets any client choose " +
+        "its own address and escape the sign-in rate limit.",
+    );
+  }
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    if (hops < 1 || hops > 10) {
+      throw new ConfigurationError(`QMAN_TRUST_PROXY hop count must be from 1 to 10, not ${hops}.`);
+    }
+    return hops;
+  }
+  const entries = raw.split(",").map((entry) => entry.trim()).filter((entry) => entry !== "");
+  for (const entry of entries) {
+    if (!/^[0-9a-f:.]+(\/\d{1,3})?$/i.test(entry) && !["loopback", "linklocal", "uniquelocal"].includes(entry)) {
+      throw new ConfigurationError(
+        `QMAN_TRUST_PROXY contains "${entry}", which is not an address, a CIDR range, or one of loopback, linklocal, uniquelocal.`,
+      );
+    }
+  }
+  return entries;
 }

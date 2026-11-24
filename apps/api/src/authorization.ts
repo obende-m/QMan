@@ -151,6 +151,22 @@ export function requirePermission(deps: GuardDependencies, permission: Permissio
 
     const authenticated = request.authenticated!;
 
+    /*
+     * A temporary password unlocks one thing: replacing itself.
+     *
+     * It was read out over the phone or printed by provisioning, so someone
+     * other than its holder knows it. Until it is changed, every permissioned
+     * route refuses, and says why so the client can show the change form
+     * instead of a wall of "permission denied".
+     */
+    if (authenticated.passwordChangeRequired === true) {
+      void reply.status(403).send({
+        error: "Choose a new password before continuing.",
+        reason: "password_change_required",
+      });
+      return;
+    }
+
     if (!authenticated.user.permissions.includes(permission)) {
       deps.logger.warn("permission refused", {
         requestId: request.requestId,

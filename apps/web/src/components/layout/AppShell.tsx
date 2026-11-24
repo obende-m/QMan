@@ -1,8 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  Bell,
   BriefcaseMedical,
-  CircleHelp,
   History,
   LayoutDashboard,
   LogOut,
@@ -94,6 +92,12 @@ export interface AppShellProps {
    */
   connection?: ConnectionSnapshot;
   searchPlaceholder?: string;
+  /**
+   * Called when a search is submitted. The search box is shown only when
+   * there is something to do with what is typed: an input that accepts text
+   * and does nothing is worse than no input.
+   */
+  onSearch?: (query: string) => void;
   /** Shown in the top bar; the primary action differs per workspace. */
   primaryAction?: ReactNode;
   children: ReactNode;
@@ -105,14 +109,22 @@ export function AppShell({
   user,
   onSignOut,
   connection,
-  searchPlaceholder = "Search patient (code, name, phone)…",
+  searchPlaceholder = "Find a journey by code, e.g. QM-8F4K",
+  onSearch,
   primaryAction,
   children,
 }: AppShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const initials = user.displayName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]!.toUpperCase())
+    .join("");
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background text-on-background antialiased">
+    <div className="flex h-screen overflow-hidden text-on-background antialiased">
       <Sidebar
         active={active}
         user={user}
@@ -126,7 +138,7 @@ export function AppShell({
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="h-16 shrink-0 border-b border-outline-variant bg-surface-container-lowest">
+        <header className="glass-strong z-30 h-16 shrink-0 rounded-none border-x-0 border-t-0">
           <div className="mx-auto flex h-full w-full max-w-container-max items-center gap-4 px-4 md:px-gutter">
             <button
               type="button"
@@ -137,22 +149,36 @@ export function AppShell({
               <Menu className="size-5" />
             </button>
 
-            <div className="relative min-w-0 flex-1 md:max-w-md">
-              <Search
-                aria-hidden="true"
-                className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-outline"
-              />
-              <input
-                type="search"
-                placeholder={searchPlaceholder}
-                aria-label="Search patients"
-                className={cn(
-                  "w-full rounded-full border border-outline-variant bg-surface-container-low",
-                  "py-2 pl-10 pr-4 text-body-sm text-on-surface placeholder:text-on-surface-variant",
-                  "focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary",
-                )}
-              />
-            </div>
+            {onSearch ? (
+              <form
+                role="search"
+                className="relative min-w-0 flex-1 md:max-w-md"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const trimmed = query.trim();
+                  if (trimmed !== "") onSearch(trimmed);
+                }}
+              >
+                <Search
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-outline"
+                />
+                <input
+                  type="search"
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder={searchPlaceholder}
+                  aria-label="Find a journey"
+                  className={cn(
+                    "w-full rounded-full border border-outline-variant bg-surface-container-lowest/70",
+                    "py-2 pl-10 pr-4 text-body-sm text-on-surface placeholder:text-on-surface-variant",
+                    "focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/40",
+                  )}
+                />
+              </form>
+            ) : (
+              <div className="flex-1" />
+            )}
 
             <div className="ml-auto flex items-center gap-2">
               {/* Quiet while healthy, insistent when not: a stale worklist is
@@ -165,20 +191,13 @@ export function AppShell({
                 />
               )}
               <ThemeToggle />
-              <button
-                type="button"
-                aria-label="Notifications"
-                className="relative rounded-full p-2 text-on-surface-variant hover:bg-surface-container"
-              >
-                <Bell className="size-5" />
-                <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-error" />
-              </button>
               {primaryAction}
               <div
+                title={user.displayName}
                 aria-hidden="true"
-                className="grid size-9 shrink-0 place-items-center rounded-full border border-outline-variant bg-secondary-container text-body-sm font-semibold text-on-secondary-container"
+                className="grid size-9 shrink-0 place-items-center rounded-full border border-white/50 bg-gradient-to-br from-primary-fixed to-secondary-container text-body-sm font-semibold text-on-primary-fixed shadow-sm"
               >
-                AO
+                {initials || "?"}
               </div>
             </div>
           </div>
@@ -225,7 +244,7 @@ function Sidebar({
       <nav
         aria-label="Main"
         className={cn(
-          "z-50 flex h-screen w-sidebar-width shrink-0 flex-col border-r border-outline-variant bg-background",
+          "glass-strong z-50 flex h-screen w-sidebar-width shrink-0 flex-col rounded-none border-y-0 border-l-0",
           "fixed inset-y-0 left-0 transition-transform md:static md:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
@@ -234,7 +253,7 @@ function Sidebar({
           <div className="mb-8 flex items-center gap-3 px-2">
             <span
               aria-hidden="true"
-              className="grid size-10 shrink-0 place-items-center rounded bg-primary-container text-on-primary"
+              className="grid size-10 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary-container to-primary text-on-primary shadow-[0_6px_16px_-6px_rgb(0_62_199/0.6)]"
             >
               <BriefcaseMedical className="size-5" />
             </span>
@@ -266,10 +285,10 @@ function Sidebar({
                   onClick={() => onNavigate(item.key)}
                   aria-current={isActive ? "page" : undefined}
                   className={cn(
-                    "flex items-center gap-3 rounded px-4 py-3 text-body-md transition-colors",
+                    "relative flex items-center gap-3 rounded-lg px-4 py-3 text-body-md transition-colors",
                     isActive
-                      ? "border-r-4 border-primary bg-surface-container-low font-bold text-primary"
-                      : "text-on-surface-variant hover:bg-surface-container-high",
+                      ? "bg-primary/10 font-semibold text-primary before:absolute before:inset-y-2 before:left-0 before:w-1 before:rounded-full before:bg-primary"
+                      : "text-on-surface-variant hover:bg-surface-container-high/70",
                   )}
                 >
                   <span aria-hidden="true">{item.icon}</span>
@@ -288,7 +307,6 @@ function Sidebar({
                 {user.username}
               </p>
             </div>
-            <SidebarLink icon={<CircleHelp className="size-5" />} label="Support" />
             <button
               type="button"
               onClick={onSignOut}
@@ -304,17 +322,6 @@ function Sidebar({
   );
 }
 
-function SidebarLink({ icon, label }: { icon: ReactNode; label: string }) {
-  return (
-    <button
-      type="button"
-      className="flex items-center gap-3 rounded px-4 py-3 text-body-md text-on-surface-variant transition-colors hover:bg-surface-container-high"
-    >
-      <span aria-hidden="true">{icon}</span>
-      {label}
-    </button>
-  );
-}
 
 /**
  * DESIGN.md calls for a dark theme for night shifts. Exposed as an explicit

@@ -280,7 +280,7 @@ describe("browser notifications", () => {
       (visit) => visit.priority === "emergency",
     )!;
     notifier.attachPatientToStream(harness.stream, emergency.id);
-    await harness.clinic.recall(emergency.id, USER_ID);
+    await harness.clinic.call(emergency.id, USER_ID);
 
     /*
      * Being called is the notification that must interrupt: the patient has to

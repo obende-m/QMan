@@ -370,6 +370,12 @@ export function toWorkflow(
  * compiler enforces rather than something a reviewer has to notice.
  */
 export interface StoredAccount {
+  /**
+   * The password is one somebody else set — at provisioning or by an
+   * administrator's reset — and must be replaced before the account does
+   * anything else.
+   */
+  readonly passwordChangeRequired?: boolean;
   readonly account: UserAccount;
   /** The tenant this account belongs to. Never inferred from the request. */
   readonly hospitalId: string;
@@ -407,6 +413,7 @@ export function toStoredAccount(row: UserRow): StoredAccount {
     hospitalId: row.hospital_id,
     passwordHash: row.password_hash,
     passwordSalt: row.password_salt,
+    passwordChangeRequired: row.password_change_required === true,
   };
 }
 

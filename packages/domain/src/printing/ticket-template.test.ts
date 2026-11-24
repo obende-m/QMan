@@ -187,6 +187,12 @@ describe("QR tracking URL", () => {
     ).toBe("https://qman.example/track.html?kiosk=1&code=QM-8F4K");
   });
 
+  it("encodes the tracking token, not the Journey Code, for a real visit", () => {
+    const url = trackingUrlFor(template(), parseJourneyCode("QM-8F4K"), "tok_abcdefghijklmnopqrstuvwxyz");
+    expect(url).toBe("/track.html?t=tok_abcdefghijklmnopqrstuvwxyz");
+    expect(url).not.toContain("QM-8F4K");
+  });
+
   it("falls back to a sane default when the URL is blank", () => {
     expect(
       trackingUrlFor(template({ trackingUrl: "  " }), parseJourneyCode("QM-8F4K")),

@@ -58,7 +58,8 @@ export async function issueTicketFor(
     throw new Error(`Station ${stationId} is not configured.`);
   }
 
-  const periodKey = resetPeriodKey(station.queueNumber, issuedAt);
+  const timeZone = configuration.profile.timezone || undefined;
+  const periodKey = resetPeriodKey(station.queueNumber, issuedAt, timeZone);
   const ordinal = await allocator.next(stationId, periodKey);
 
   return issueTicket(station.queueNumber, {
@@ -66,6 +67,7 @@ export async function issueTicketFor(
     stationCode: station.code,
     journeyCode,
     issuedAt,
+    ...(timeZone ? { timeZone } : {}),
   });
 }
 

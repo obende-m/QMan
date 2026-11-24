@@ -24,6 +24,8 @@ export interface VisitRow {
   created_at: Date;
   completed_at: Date | null;
   closed_at: Date | null;
+  /** Optimistic-lock version. Absent only in rows built by hand in tests. */
+  version?: number;
 }
 
 export interface QueueEntryRow {
@@ -118,6 +120,8 @@ export interface UserRow {
   role_key: string;
   /** The role's grant, resolved in the same statement. */
   permissions: string[];
+  /** Absent before migration 014, and in rows built by hand in tests. */
+  password_change_required?: boolean;
 }
 
 export interface SessionRow {

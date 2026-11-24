@@ -1376,3 +1376,80 @@ does not rest on the service alone.
 existing row, or — worse — reuse the identifier of a deleted entity and silently
 inherit its history: its audit entries, its events, everything that referred to
 the thing that used to have that id.
+
+## ADR-058 — Routing is decided on the server, from the visit's own workflow
+
+The browser used to send `followedWorkflow` and the server believed it, so any
+holder of `queue.route` could send a patient anywhere and have the audit trail
+record an ordinary step. The route endpoint now runs `resolveRoute` against the
+workflow the visit was admitted on (not the hospital's current default),
+refuses a disabled or unknown destination with 422, refuses an off-workflow
+route without `queue.route_off_workflow` with 403, and only then allocates a
+ticket — a refused route consumes no number. Any `followedWorkflow` in the body
+is ignored.
+
+## ADR-059 — Identity is a projection decided per caller
+
+`visitToWire` takes a required `{ includeIdentity }`. The server sets it from
+`visit.view_identity`; without it the patient reference is emptied and
+`identityWithheld` is set, and staff screens show the ticket in place of a
+name. The `visit.created` event no longer carries the name or hospital
+number at all: the event log is append-only and read by people who may not
+hold the permission. Public projections are built from scratch and never carry
+identity except where a board's configured name policy shows one.
+
+## ADR-060 — Visits are optimistically locked, in the repository
+
+`visits.version` is read with every visit and stated on every write
+(`UPDATE … WHERE id = $1 AND version = $n`). A lost race matches no row, the
+transaction is abandoned before any queue entry or event is written, and the
+route answers 409. The version is tracked beside the aggregate in a `WeakMap`
+rather than on it, because it is a storage concern. The closure job uses the
+same path, so racing staff or a second instance is harmless.
+
+## ADR-061 — Admission retries reissue the token instead of storing it
+
+Admission is idempotent. The idempotency record holds only the new visit's id;
+a replay loads the visit, mints a fresh tracking token (the only copy of the
+first was in the lost response) and answers 201 as the first request would.
+No tracking credential and no patient identity is ever stored in
+`idempotency_keys`. Reprinting a ticket reissues the token the same way and so
+retires the old QR.
+
+## ADR-062 — Configuration writes take the organization row lock
+
+Each change validates the whole configuration and writes one entity. At READ
+COMMITTED two concurrent changes each validated against the state before the
+other. Every configuration and role write now begins with
+`SELECT … FROM hospitals WHERE id = $1 FOR UPDATE`, serialising writes per
+organization without blocking reads. Changes to an id that does not exist
+answer 404 and write no audit entry; body fields are checked against the shape
+of the value they replace and answer 422 on mismatch; built-in roles cannot be
+deleted.
+
+## ADR-063 — Public surfaces are served complete projections and poll
+
+The display board and tracker used to load the staff configuration and visit
+list, which require a session they never have. They now render only
+`/api/v1/public/*`, which returns station names, rooms, serving and waiting
+tickets, positions and estimates computed on the server with the domain's own
+`buildWorklist` and `estimateWaitMillis`. They poll (4 s board, 10 s token
+tracker, 20 s typed-code tracker to stay inside its rate limit) with backoff,
+and say when they are stale. A public event stream is deferred until it has its
+own projection and rate limits.
+
+## ADR-064 — Sessions are scoped and suspension bites at once
+
+A branch-restricted account signing in without a branch, or with one it does
+not hold, is pinned to its first branch instead of being given organization
+wide access. An organization-wide account may only pin to a branch of its own
+organization. Session resolution refuses sessions of a suspended organization
+on the next request. Generated passwords (provisioning, platform reset,
+administrator reset, new staff accounts) set `password_change_required`, and
+every permissioned route refuses until the holder changes it.
+
+## ADR-065 — Reverse proxies are trusted explicitly
+
+`QMAN_TRUST_PROXY` takes a hop count or a list of addresses and refuses `true`.
+Rate limits key on `request.ip`, which is the socket address unless a trusted
+proxy reports otherwise.

@@ -22,7 +22,9 @@
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { isJourneyCode, normaliseJourneyCode, type BranchId, type Visit } from "@qman/domain";
-import type { VisitRepository } from "@qman/persistence";
+import type { ConfigurationRepository, VisitRepository } from "@qman/persistence";
+import { boardSnapshot, trackSnapshot } from "./public-projection.js";
+import { isUuid } from "./identifiers.js";
 import { createRateLimiter, type RateLimiter } from "./rate-limit.js";
 import { hashToken } from "./tokens.js";
 import type { OrganizationDirectoryRepository } from "@qman/persistence";
@@ -45,6 +47,12 @@ export interface PublicRouteDependencies {
    */
   readonly organizations: OrganizationDirectoryRepository;
   readonly trackerLimiter?: RateLimiter;
+  /**
+   * The organization's configuration, for station names, rooms and wait
+   * estimates. Every deployment supplies it; without it the surfaces fall back
+   * to tickets and statuses alone.
+   */
+  readonly configuration?: ConfigurationRepository;
 }
 
 export interface BoardDefinition {
@@ -65,7 +73,7 @@ export interface BoardDirectory {
  * exist, so every caller can treat both as "not found" without deciding which
  * it was.
  */
-async function servingPublicly(
+export async function servingPublicly(
   deps: PublicRouteDependencies,
   branchId: string,
 ): Promise<boolean> {
@@ -137,6 +145,25 @@ function describeForPatient(visit: Visit): Record<string, unknown> {
   };
 }
 
+/**
+ * The patient's view, with station names, position and wait when the
+ * configuration is available.
+ */
+async function patientView(
+  deps: PublicRouteDependencies,
+  hospitalId: string,
+  visit: Visit,
+): Promise<Record<string, unknown>> {
+  const base = { visit: describeForPatient(visit) };
+  const configuration = await deps.configuration?.load(hospitalId);
+  const stationId = visit.currentStationId;
+  if (!configuration) return base;
+  const atStation = stationId
+    ? (await deps.visits.openAtStation(hospitalId, stationId)).filter((v) => v.branchId === visit.branchId)
+    : [];
+  return { ...base, track: trackSnapshot(configuration, visit, atStation, deps.now()) };
+}
+
 function clientKey(request: FastifyRequest): string {
   return request.ip;
 }
@@ -156,6 +183,7 @@ export function registerPublicRoutes(
    */
   app.get(`${V1}/public/boards/:boardId`, async (request, reply) => {
     const { boardId } = request.params as { boardId: string };
+    if (!isUuid(boardId)) return reply.status(404).send({ error: "No such board." });
     const board = await deps.boards.find(boardId);
 
     if (board === null) {
@@ -187,6 +215,20 @@ export function registerPublicRoutes(
       )
       .map((entry) => describeForBoard(entry, null));
 
+    // A board polls, so it must not be served from a cache between polls.
+    void reply.header("Cache-Control", "no-store");
+
+    const configuration = await deps.configuration?.load(organization.id);
+    const configured = configuration?.displayBoards.find((b) => b.id === board.id);
+    if (configuration && configured) {
+      const snapshot = boardSnapshot(configuration, configured, visits, deps.now());
+      return reply.status(200).send({
+        ...snapshot,
+        board: { ...(snapshot["board"] as object), stationIds: board.stationIds },
+        entries,
+      });
+    }
+
     return reply.status(200).send({
       board: { id: board.id, name: board.name, stationIds: board.stationIds },
       entries,
@@ -212,11 +254,13 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "That tracking link is not valid." });
     }
 
-    if (!(await servingPublicly(deps, visit.branchId))) {
+    const owner = await deps.organizations.findByBranch(visit.branchId);
+    if (owner === null || owner.status !== "active") {
       return reply.status(404).send({ error: "That tracking link is not valid." });
     }
 
-    return reply.status(200).send({ visit: describeForPatient(visit) });
+    void reply.header("Cache-Control", "no-store");
+    return reply.status(200).send(await patientView(deps, owner.id, visit));
   });
 
   /**
@@ -262,7 +306,11 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "That code was not found." });
     }
 
-    if (!(await servingPublicly(deps, branchId))) {
+    if (!isUuid(branchId)) {
+      return reply.status(404).send({ error: "That code was not found." });
+    }
+    const owner = await deps.organizations.findByBranch(branchId);
+    if (owner === null || owner.status !== "active") {
       return reply.status(404).send({ error: "That code was not found." });
     }
 
@@ -271,6 +319,7 @@ export function registerPublicRoutes(
       return reply.status(404).send({ error: "That code was not found." });
     }
 
-    return reply.status(200).send({ visit: describeForPatient(visit) });
+    void reply.header("Cache-Control", "no-store");
+    return reply.status(200).send(await patientView(deps, owner.id, visit));
   });
 }

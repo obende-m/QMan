@@ -8,40 +8,33 @@ medical records; QMan owns how patients move.
 
 ## Status
 
-All Version 1 modules are built and tested. 420 tests, `npm run verify` green.
+**Development complete for a supervised pilot, not yet technically verified
+against PostgreSQL in CI, and not deployed.** `npm run verify` is green:
+typecheck, build, web production build, and 779 unit and component tests.
+The 81 PostgreSQL integration and end-to-end tests run only with
+`DATABASE_URL` set (`npm run verify:db -w @qman/api`) and must be run before
+any deployment. See [docs/QMAN-COMPLETION-REPORT.md](docs/QMAN-COMPLETION-REPORT.md)
+for the full checklist, what was verified, and what remains.
 
-| Layer | State |
+| Area | State |
 | --- | --- |
-| `@qman/domain` — visits, workflows, queues, analytics, config, telemetry | ✅ 165 tests |
-| Staff app — Reception + Priority Patients | ✅ 11 tests |
-| Staff app — Station Workspace (every station type) | ✅ 14 tests |
-| Staff app — Manager Dashboard | ✅ 9 tests |
-| Staff app — Operational Command Centre | ✅ 14 tests |
-| Staff app — Administration Portal | ✅ 14 tests |
-| Display Board app — configurable, live signage | ✅ 16 tests |
-| Patient Tracker app — journey tracking, no login | ✅ 10 tests |
-| Event bus, audit trail, announcement rendering | ✅ built |
-| Voice announcements + browser notifications | ✅ 16 tests |
-| Patient Tracker installable as a PWA | ✅ built |
-| QR codes + configurable ticket printing | ✅ 41 tests |
-| Authentication, sessions, RBAC gating | ✅ 24 tests |
-| `@qman/persistence` — schema, mappers, repositories | ✅ 41 tests |
-| Activity & Audit Explorer | ✅ 17 tests |
+| Multi-organisation platform (Platform portal, provisioning, suspension) | Built; tenant derived from the session, never from client input |
+| Staff auth: server sessions, CSRF, lockout, rate limits, trusted proxies | Built |
+| Account administration: users, roles, branches, password reset, sessions | Built (API + Administration portal) |
+| Temporary passwords must be replaced before any other action | Built |
+| Reception admission (idempotent, priority by permission, secure-token QR) | Built |
+| Station actions: call, recall, skip, start, route (server-decided), complete, cancel, priority | Built |
+| Optimistic locking on visits; 409 on a concurrent change | Built |
+| Patient identity withheld from callers without `visit.view_identity` | Built |
+| Visit closure and abandonment job; token expiry; pruning | Built |
+| Display board and patient tracker on the public API (no session) | Built; polling |
+| Audit: configuration, account, session and sign-in events | Built |
+| Glass design system across staff, board and tracker surfaces | Built |
+| Public live stream for boards; SMS/WhatsApp/push delivery; exports | **Not built** — see the report |
 
-**Version 1 is feature complete.** The objective is no longer *build QMan* but
-**prepare QMan for clinical use** — reliability, security, performance,
-usability, deployment, documentation, training, operational readiness.
-See [docs/HARDENING.md](docs/HARDENING.md) and the hospital-facing
-[docs/RUNBOOK.md](docs/RUNBOOK.md).
-
-> **Not yet verified against a real database.** The schema, mappers and
-> repository SQL are unit-tested against a recording fake; no Postgres exists in
-> this environment. See the open items in [docs/DECISIONS.md](docs/DECISIONS.md).
-
-> **Development accounts.** `npm run dev` seeds three users — `ifeoma`
-> (reception), `adams` (clinician) and `admin` — and prints a freshly generated
-> password to the browser console on start. Set `VITE_SEED_PASSWORD` in
-> `.env.local` for a stable one; see `.env.example`.
+> **No demo accounts are seeded.** Organisations are created through the
+> Platform portal after `npm run bootstrap -w @qman/api` creates the first
+> platform administrator. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ### Events are the backbone
 
@@ -49,12 +42,11 @@ One clinical action fans out to everything downstream, and the queue engine
 knows about none of it (ADR-028):
 
 ```
-clinic.callNext()
-   └─ VisitCalled ──> event bus ──┬── announcements   (what to say)
-                                  ├── notifications   (delivery + outcome)
-                                  ├── audit log       (what happened)
-                                  ├── presence        (who is at their post)
-                                  └── every open screen
+POST /visits/:id/call ─> Visit aggregate ─> versioned save (visit + events, one transaction)
+                                         └─> server event stream ──┬── staff screens re-read
+                                                                   ├── announcements
+                                                                   └── audit / activity log
+Display boards and patient trackers poll the public projections.
 ```
 
 ### Configured, not coded
@@ -72,8 +64,9 @@ that can mutate clinical state (ADR-023).
 | App | Entry | Bundle | Who loads it |
 | --- | --- | --- | --- |
 | Staff | `/` | ~130 kB | Reception, clinicians, managers |
-| Display Board | `/display.html?board=board-lab` | ~7 kB | Waiting-room screens |
-| Patient Tracker | `/track.html?code=QM-8F4K` | ~10 kB | Patients, via QR |
+| Display Board | `/display.html?board=<board id>` | small | Waiting-room screens (public API only) |
+| Patient Tracker | `/track.html?t=<tracking token>` | small | Patients, via the ticket QR (public API only) |
+| Platform | `/platform.html` | small | QMan platform administrators |
 
 ### Two identities, deliberately
 
@@ -94,7 +87,8 @@ so both are configuration. See ADR-016 to ADR-018, ADR-020 and ADR-021.
 ```bash
 npm install
 npm run dev        # web app at http://localhost:5173
-npm run verify     # typecheck + build + test (420 tests)
+npm run verify     # typecheck + build + unit tests
+DATABASE_URL=postgres://… npm run verify:db -w @qman/api   # PostgreSQL suites
 ```
 
 Other scripts: `npm test`, `npm run test:watch`, `npm run build`.
