@@ -400,3 +400,79 @@ Boards and the tracker now use only the public endpoints and need no session.
 2. Run the smoke test (§6) end to end, including a board on a second device and
    a tracker on a phone.
 3. Take and restore a backup (RUNBOOK) before the first patient is admitted.
+
+---
+
+## 10. Without a domain: Vercel, Render and Supabase
+
+§0.1 holds: a `*.vercel.app` web app cannot call a `*.onrender.com` API
+directly, because the browser withholds the session cookie between them. The
+way round it without a domain is to serve the API **through** the Vercel
+address. `apps/web/vercel.json` forwards `/api/*` to Render, so the browser only
+ever talks to one site and the cookie is first-party. The web app already calls
+`/api` on its own origin when `VITE_API_URL` is unset.
+
+```
+browser ──► https://qman.vercel.app ──► /api/*  ──► https://qman-api.onrender.com
+                 (web app, Vercel)       (rewrite)        (API, Render)
+                                                               │
+                                                               ▼
+                                                    Supabase PostgreSQL
+```
+
+### 10.1 Database: Supabase
+
+1. Create a project in the region nearest your clinics, matching the Render
+   region in `render.yaml`. Keep the database password.
+2. **Connect → Session pooler**. Copy that connection string. Not *Direct
+   connection*: that host is IPv6-only and Render cannot reach it.
+3. Use Supabase as a database only. Leave its Auth, Storage and generated APIs
+   unused; QMan authenticates and authorises every request itself.
+4. The free plan pauses an inactive project after about a week. Use a paid plan
+   for anything a clinic depends on.
+
+### 10.2 API: Render
+
+1. **New → Blueprint**, select the repository. Render reads `render.yaml`.
+2. When asked, enter:
+   - `DATABASE_URL`: the Session pooler string from 10.1
+   - `QMAN_ALLOWED_ORIGINS`: the Vercel address, e.g. `https://qman.vercel.app`.
+     If you do not know it yet, enter a placeholder and correct it after 10.3.
+3. The service is named `qman-api`, so that it is served at
+   `https://qman-api.onrender.com`. If Render gives it a different address,
+   change the rewrite destination in `apps/web/vercel.json` to match.
+4. If the log shows `self-signed certificate in certificate chain`, download the
+   CA certificate from Supabase (**Project Settings → Database → SSL
+   Configuration**), add it in Render as a **Secret File** named
+   `supabase-ca.crt`, and set `NODE_EXTRA_CA_CERTS=/etc/secrets/supabase-ca.crt`.
+   Do **not** set `DATABASE_SSL_INSECURE`.
+5. Confirm `https://qman-api.onrender.com/api/health` returns 200.
+
+### 10.3 Web: Vercel
+
+1. **Add New → Project**, import the repository, **Root Directory** `apps/web`.
+   Leave build settings alone (§4).
+2. **Do not set `VITE_API_URL`.** Unset, the app calls `/api` on its own
+   address, which the rewrite forwards.
+3. Deploy. Note the production address, then set `QMAN_ALLOWED_ORIGINS` on
+   Render to exactly that origin and let Render redeploy.
+
+### 10.4 First run and smoke test
+
+Run §5 from your machine with `DATABASE_URL` set to the Supabase string, then
+the §6 smoke test using the Vercel address for both the web app and the API:
+`https://qman.vercel.app/api/health` should answer 200 through the rewrite.
+
+### 10.5 Limits of this arrangement
+
+- **Live staff updates may drop and reconnect.** Vercel bounds the duration of
+  proxied requests. The staff stream reconnects by itself; updates can lag by a
+  few seconds around each reconnect. Boards and the tracker poll and are
+  unaffected.
+- **Client addresses.** `QMAN_TRUST_PROXY=2` assumes exactly two proxies
+  (Vercel, then Render). After the first sign-ins, check the API log: if every
+  request shows the same address, rate limits are keyed on a proxy, and the
+  setting needs correcting.
+- **The address is `qman.vercel.app`.** Moving to a domain later is
+  configuration only: point `app.` at Vercel and `api.` at Render, set
+  `VITE_API_URL`, remove the rewrite, and update `QMAN_ALLOWED_ORIGINS`.
