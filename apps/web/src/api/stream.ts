@@ -28,6 +28,7 @@ export interface StreamEvent {
   readonly at: string;
   readonly branchId: string;
   readonly visitId: string | null;
+  readonly actorId: string | null;
   readonly correlationId: string | null;
   readonly stationId: string | null;
   readonly queueLabel: string | null;

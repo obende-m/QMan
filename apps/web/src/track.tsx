@@ -1,10 +1,8 @@
-import { StrictMode } from "react";
+import { StrictMode, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { PatientJourney } from "./features/track/PatientJourney.js";
-import { clinicStore, eventBus, operationsStore } from "./data/bootstrap.js";
-import { configStore } from "./data/config-store.js";
-import { Notifier } from "./runtime/notifier.js";
-import { browserNotifications } from "./runtime/ports.js";
+import { stores } from "./data/runtime-stores.js";
+import { operationsStore } from "./data/operations-store.js";
 import { registerServiceWorker, watchInstallability } from "./runtime/pwa.js";
 import "./index.css";
 
@@ -30,11 +28,60 @@ const code = params.get("code") ?? params.get("journey") ?? undefined;
 watchInstallability();
 registerServiceWorker();
 
-const notifier = new Notifier({
-  notifications: browserNotifications(),
-  operations: operationsStore,
-  config: configStore,
-});
+/**
+ * Loads the hospital, then the branch, then renders.
+ *
+ * A patient's page needs the configuration to name the station they are at.
+ * Rendering before it arrives would show "Station" where a room number belongs.
+ */
+function TrackerApp() {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      await stores.config.load();
+      const branchId = stores.config.status === "ready"
+        ? stores.config.config.branches[0]?.id
+        : undefined;
+      if (branchId !== undefined) {
+        await stores.clinic.load(branchId);
+        stores.stream.start();
+      }
+      setReady(true);
+    })();
+  }, []);
+
+  if (!ready) {
+    return (
+      <main
+        role="status"
+        className="grid min-h-screen place-items-center text-body-lg text-on-surface-variant"
+      >
+        Loading…
+      </main>
+    );
+  }
+
+  return (
+    /*
+     * No alerts prop.
+     *
+     * TODO(backend): patient notifications need a public per-visit event
+     * stream. `PatientAlerts` subscribes to domain events, and the only stream
+     * that carries them is `/api/v1/stream`, which requires a staff session —
+     * this surface is opened by a patient with no account. The public board
+     * projection deliberately carries no Journey Code or visit id, so it
+     * cannot be filtered to one patient either.
+     *
+     * The page still updates: it re-reads on the interval below. What is
+     * missing is the push notification when a patient's own turn arrives.
+     */
+    <PatientJourney
+      store={stores.clinic}
+      {...(code ? { initialCode: code } : {})}
+    />
+  );
+}
 
 const container = document.getElementById("root");
 if (!container) {
@@ -43,10 +90,6 @@ if (!container) {
 
 createRoot(container).render(
   <StrictMode>
-    <PatientJourney
-      store={clinicStore}
-      {...(code ? { initialCode: code } : {})}
-      alerts={{ notifier, bus: eventBus }}
-    />
+    <TrackerApp />
   </StrictMode>,
 );

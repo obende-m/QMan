@@ -1,5 +1,10 @@
 import { useEffect, useMemo } from "react";
-import { displayPatientName, type StationId, type StationWorklist } from "@qman/domain";
+import {
+  displayPatientName,
+  type BranchId,
+  type StationId,
+  type StationWorklist,
+} from "@qman/domain";
 import { cn } from "../../components/ui/cn.js";
 import {
   ConnectionStatus,
@@ -7,12 +12,13 @@ import {
 } from "../../components/ui/ConnectionStatus.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
-import { BRANCH, stationName, stationRoom } from "../../data/demo-clinic.js";
+import { stationName, stationRoom } from "../../data/clinic-projections.js";
+import { useConfig } from "../../data/useConfig.js";
 import {
   operationsStore,
   type OperationsStore,
 } from "../../data/operations-store.js";
-import type { DisplayBoardConfig } from "../../data/display-boards.js";
+import type { DisplayBoardConfig } from "@qman/domain";
 
 /**
  * The public Display Board.
@@ -36,12 +42,15 @@ import type { DisplayBoardConfig } from "../../data/display-boards.js";
  */
 export interface DisplayBoardProps {
   config: DisplayBoardConfig;
+  /** The branch this screen hangs in, for device heartbeats. */
+  branchId: BranchId;
   store?: ClinicStore;
   operations?: OperationsStore;
 }
 
 export function DisplayBoard({
   config,
+  branchId,
   store: injected,
   operations: injectedOps,
 }: DisplayBoardProps) {
@@ -70,17 +79,17 @@ export function DisplayBoard({
         deviceId: config.id,
         kind: "display_board",
         name: config.name,
-        branchId: BRANCH,
+        branchId,
       });
 
     beat();
     const timer = setInterval(beat, 15_000);
     return () => clearInterval(timer);
-  }, [ops, config.id, config.name]);
+  }, [ops, branchId, config.id, config.name]);
 
   const stations = useMemo(
     () =>
-      config.stationIds.map((stationId) => ({
+      config.stationIds.map((stationId: StationId) => ({
         stationId,
         worklist: clinic.worklist(stationId),
       })),
@@ -128,7 +137,7 @@ export function DisplayBoard({
                 : "grid-cols-1 md:grid-cols-2 xl:grid-cols-3",
           )}
         >
-          {stations.map(({ stationId, worklist }) => (
+          {stations.map(({ stationId, worklist }: { stationId: StationId; worklist: StationWorklist }) => (
             <StationPanel
               key={stationId}
               stationId={stationId}
@@ -154,6 +163,7 @@ function StationPanel({
   config: DisplayBoardConfig;
   estimatedWaitMillis: number;
 }) {
+  const hospital = useConfig();
   const serving = worklist.current;
   const waiting = worklist.waiting.slice(0, config.waitingToShow);
   const overflow = worklist.waiting.length - waiting.length;
@@ -163,16 +173,16 @@ function StationPanel({
 
   return (
     <section
-      aria-label={`${stationName(stationId)} queue`}
+      aria-label={`${stationName(hospital.config, stationId)} queue`}
       className="flex flex-col overflow-hidden rounded-xl border border-outline-variant bg-surface-container-low"
     >
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 border-b border-outline-variant bg-surface-container px-6 py-4">
         <h2 className="text-headline-lg font-semibold tracking-tight text-on-surface">
-          {stationName(stationId)}
+          {stationName(hospital.config, stationId)}
         </h2>
-        {config.showRoom && stationRoom(stationId) && (
+        {config.showRoom && stationRoom(hospital.config, stationId) && (
           <p className="font-mono text-label-caps uppercase tracking-widest text-on-surface-variant">
-            {stationRoom(stationId)}
+            {stationRoom(hospital.config, stationId)}
           </p>
         )}
       </div>

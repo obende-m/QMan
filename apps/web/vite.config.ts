@@ -22,6 +22,7 @@ export default defineConfig({
         staff: resolve(here, "index.html"),
         display: resolve(here, "display.html"),
         track: resolve(here, "track.html"),
+        platform: resolve(here, "platform.html"),
       },
     },
   },

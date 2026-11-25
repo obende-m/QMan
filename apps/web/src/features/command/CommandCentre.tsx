@@ -1,3 +1,4 @@
+import { useConfig } from "../../data/useConfig.js";
 import { useMemo } from "react";
 import {
   Activity,
@@ -10,6 +11,7 @@ import {
   Volume2,
 } from "lucide-react";
 import type {
+  HospitalConfiguration,
   ChannelHealth,
   DeviceHealth,
   StaffPresence,
@@ -22,7 +24,7 @@ import { cn } from "../../components/ui/cn.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
 import type { OperationsStore } from "../../data/operations-store.js";
 import { CHANNEL_LABELS } from "../../data/operations-store.js";
-import { slaFor, stationName, userName } from "../../data/demo-clinic.js";
+import { slaFor, staffLabel, stationName } from "../../data/clinic-projections.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
 import { useOperations } from "../../data/useOperations.js";
 
@@ -54,6 +56,7 @@ export function CommandCentre({
   onOpenStation,
 }: CommandCentreProps = {}) {
   const clinic = useClinic(injected);
+  const config = useConfig();
   const ops = useOperations(injectedOps);
   const now = useNow(2000);
   const version = clinic.getVersion() + ops.getVersion();
@@ -78,7 +81,7 @@ export function CommandCentre({
     };
   }, [clinic, ops, now, version]);
 
-  const alerts = buildAlerts(view, now);
+  const alerts = buildAlerts(config.config, view, now);
 
   return (
     <div className="space-y-6">
@@ -154,6 +157,7 @@ interface Alert {
  * only a risk.
  */
 function buildAlerts(
+  configuration: HospitalConfiguration,
   view: {
     bottlenecks: readonly StationHealth[];
     devices: readonly DeviceHealth[];
@@ -178,7 +182,7 @@ function buildAlerts(
     alerts.push({
       id: `unstaffed-${stationId}`,
       severity: "critical",
-      title: `${stationName(stationId as never)} has nobody serving`,
+      title: `${stationName(configuration, stationId as never)} has nobody serving`,
       detail: "Patients are waiting and no member of staff is active here.",
       stationId,
     });
@@ -189,9 +193,9 @@ function buildAlerts(
     alerts.push({
       id: `sla-${station.stationId}`,
       severity: "critical",
-      title: `${stationName(station.stationId)} is over its wait target`,
+      title: `${stationName(configuration, station.stationId)} is over its wait target`,
       detail: `Longest wait ${formatDuration(station.longestWaitMillis)} against a ${formatDuration(
-        slaFor(station.stationId).targetWaitMillis,
+        slaFor(configuration, station.stationId).targetWaitMillis,
       )} target.`,
       stationId: station.stationId,
     });
@@ -212,7 +216,7 @@ function buildAlerts(
     alerts.push({
       id: `risk-${station.stationId}`,
       severity: "warning",
-      title: `${stationName(station.stationId)} is approaching its wait target`,
+      title: `${stationName(configuration, station.stationId)} is approaching its wait target`,
       detail: `Longest wait ${formatDuration(station.longestWaitMillis)}. Still time to intervene.`,
       stationId: station.stationId,
     });
@@ -355,6 +359,7 @@ function QueueHealth({
   unstaffed: readonly string[];
   onOpenStation?: (stationId: string) => void;
 }) {
+  const config = useConfig();
   return (
     <Card>
       <CardHeader title="Queue health" subtitle="Every station, worst first." />
@@ -374,7 +379,7 @@ function QueueHealth({
                     disabled={!onOpenStation}
                     className="truncate text-body-md font-semibold text-on-surface hover:text-primary disabled:hover:text-on-surface"
                   >
-                    {stationName(station.stationId)}
+                    {stationName(config.config, station.stationId)}
                   </button>
                   {station.status !== "healthy" && (
                     <StatusChip
@@ -399,7 +404,7 @@ function QueueHealth({
                   aria-valuenow={Math.round(station.loadRatio * 100)}
                   aria-valuemin={0}
                   aria-valuemax={100}
-                  aria-label={`${stationName(station.stationId)} load`}
+                  aria-label={`${stationName(config.config, station.stationId)} load`}
                   className="h-2 w-full overflow-hidden rounded-full bg-surface-container-high"
                 >
                   <div
@@ -527,6 +532,7 @@ function ChannelHealthCard({ channels }: { channels: readonly ChannelHealth[] })
 }
 
 function PresenceCard({ presence }: { presence: readonly StaffPresence[] }) {
+  const config = useConfig();
   return (
     <Card>
       <CardHeader
@@ -556,10 +562,10 @@ function PresenceCard({ presence }: { presence: readonly StaffPresence[] }) {
                 )}
               />
               <span className="min-w-0 flex-1 truncate text-body-md text-on-surface">
-                {userName(person.userId)}
+                {staffLabel(person.userId)}
               </span>
               <span className="truncate text-body-sm text-on-surface-variant">
-                {person.stationId ? stationName(person.stationId) : "—"}
+                {person.stationId ? stationName(config.config, person.stationId) : "—"}
               </span>
               <span className="shrink-0 font-mono text-label-caps uppercase text-on-surface-variant">
                 {person.status === "active"
@@ -643,7 +649,7 @@ function AuditCard({
                 {entry.summary}
               </span>
               <span className="truncate text-body-sm text-on-surface-variant">
-                {entry.actorId ? userName(entry.actorId) : "System"}
+                {entry.actorId ? staffLabel(entry.actorId) : "System"}
               </span>
               <span className="shrink-0 font-mono text-label-caps uppercase text-on-surface-variant">
                 {entry.occurredAt.toLocaleTimeString([], {

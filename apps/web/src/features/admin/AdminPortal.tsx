@@ -18,7 +18,8 @@ import {
 } from "@qman/domain";
 import { Card, CardHeader } from "../../components/ui/Card.js";
 import { cn } from "../../components/ui/cn.js";
-import { configStore, type ConfigStore } from "../../data/config-store.js";
+import type { ConfigStore } from "../../data/config-store.js";
+import { stores } from "../../data/runtime-stores.js";
 import { useConfig } from "../../data/useConfig.js";
 import { useOperations } from "../../data/useOperations.js";
 import type { OperationsStore } from "../../data/operations-store.js";
@@ -123,7 +124,7 @@ export interface AdminPortalProps {
 }
 
 export function AdminPortal({
-  store: injected = configStore,
+  store: injected = stores.config,
   operations: injectedOps,
 }: AdminPortalProps) {
   const config = useConfig(injected);
@@ -195,7 +196,7 @@ export function AdminPortal({
             <TicketsSection store={config} problems={problems} />
           )}
           {section === "roles" && <RolesSection store={config} />}
-          {section === "sessions" && <SessionsSection auth={auth} />}
+          {section === "sessions" && <SessionsSection />}
         </div>
       </div>
     </div>

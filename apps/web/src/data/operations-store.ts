@@ -5,7 +5,9 @@ import {
   assessPresence,
   channelHealth,
   matchesQuery,
+  categoryOf,
   renderAnnouncement,
+  type JourneyCode,
   unhealthyDevices,
   unstaffedStations,
   type ActivityCategory,
@@ -23,9 +25,22 @@ import {
   type StaffPresence,
   type VisitEvent,
 } from "@qman/domain";
-import { configStore, type ConfigStore } from "./config-store.js";
-import { stationName, stationRoom } from "./demo-clinic.js";
-import type { EventBus, EventSubscriber } from "./event-bus.js";
+import type { HospitalConfiguration } from "@qman/domain";
+import type { ConfigStore } from "./config-store.js";
+import { stores } from "./runtime-stores.js";
+import { stationName, stationRoom } from "./clinic-projections.js";
+
+/** The slice of a stream event this store reads. */
+export interface StreamEventLike {
+  readonly type: string;
+  readonly at: string;
+  readonly visitId: string | null;
+  readonly actorId: string | null;
+  readonly correlationId: string | null;
+  readonly stationId: string | null;
+  readonly queueLabel: string | null;
+  readonly summary: string;
+}
 
 /**
  * Operational telemetry for QMan itself.
@@ -75,7 +90,7 @@ export class OperationsStore {
   #version = 0;
   #listeners = new Set<() => void>();
 
-  constructor(private readonly config: ConfigStore = configStore) {}
+  constructor(private readonly config: ConfigStore = stores.config) {}
 
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -257,135 +272,87 @@ export class OperationsStore {
    * cannot take out the others — a broken announcement must not stop the audit
    * trail recording that the patient was called.
    */
-  attachTo(bus: EventBus): () => void {
-    const unsubscribes = [
-      bus.subscribe(this.#auditSubscriber()),
-      bus.subscribe(this.#announcementSubscriber()),
-      bus.subscribe(this.#notificationSubscriber()),
-      bus.subscribe(this.#presenceSubscriber()),
-    ];
-    return () => unsubscribes.forEach((off) => off());
+  /**
+   * Feeds the store from the server's event stream.
+   *
+   * The browser no longer produces domain events — the server does, and what
+   * arrives is the staff projection: type, time, station, ticket, actor and a
+   * summary already rendered at write time.
+   *
+   * That projection is enough for everything here except one thing, and the
+   * difference is deliberate. The audit trail records what the server said
+   * rather than re-deriving it, which is the point of rendering the summary
+   * once. Announcements need the ticket and the station, both present.
+   * Presence needs the actor, which the staff projection carries.
+   *
+   * There is one translation, here, and nothing downstream knows the transport
+   * changed.
+   */
+  attachToStream(stream: {
+    onEvent: (listener: (event: StreamEventLike) => void) => () => void;
+  }): () => void {
+    return stream.onEvent((event) => this.ingest(event));
   }
 
   /**
-   * The audit trail. Subscribes to everything and records without judgement —
-   * ADR-005's guarantee is only worth anything if something writes it down.
+   * Loads the events already recorded, through the same translation.
+   *
+   * History and live traffic are the same events at different ages, so they go
+   * through one interpretation. A second reader would be a second opinion
+   * about what an event means, and the two would disagree the first time
+   * either changed.
    */
-  #auditSubscriber(): EventSubscriber {
-    return {
-      name: "audit-log",
-      handle: (event) => {
-        this.#log({
-          category: "operational",
-          type: event.type,
-          summary: summarise(event),
-          actorId: event.actorId,
-          visitId: event.visitId,
-          // Carried on the event itself, so correlation survives a restart, a
-          // late subscription, or events arriving from another process.
-          correlationId: event.journeyCode,
-          occurredAt: event.occurredAt,
-        });
-        this.#commit();
-      },
-    };
+  ingestHistory(events: readonly StreamEventLike[]): void {
+    for (const event of events) this.ingest(event);
   }
 
-  #announcementSubscriber(): EventSubscriber {
-    return {
-      name: "announcements",
-      events: ["visit.called", "visit.routed", "visit.completed"],
-      handle: (event) => {
-        if (!this.#announcementConfig.enabled) return;
+  ingest(event: StreamEventLike): void {
+    {
+      const at = new Date(event.at);
 
-        const announcementEvent = toAnnouncementEvent(event);
-        if (!announcementEvent) return;
+      this.#log({
+        // The domain decides which timeline an event belongs to. Hardcoding
+        // "operational" here filed every configuration change under activity
+        // and left the audit log empty.
+        category: categoryOf(event.type),
+        type: event.type,
+        summary: event.summary,
+        actorId: (event.actorId as UserId | null) ?? null,
+        visitId: event.visitId,
+        correlationId: event.correlationId,
+        occurredAt: at,
+      });
 
-        const context = this.#contextFor(event);
-        if (!context) return;
+      if (event.actorId !== null && event.stationId !== null) {
+        this.recordActivity(event.actorId as UserId, event.stationId as StationId, at);
+      }
 
+      if (event.type === "visit.called" && event.queueLabel !== null) {
+        const stationId = (event.stationId ?? "") as StationId;
         this.#record({
           id: `ann-${(this.#sequence += 1)}`,
-          event: announcementEvent,
-          text: renderAnnouncement(
-            this.#announcementConfig,
-            announcementEvent,
-            context.announcement,
-          ),
-          stationId: context.stationId,
-          occurredAt: event.occurredAt,
-          // Speech synthesis is wired at the presentation layer; the record is
-          // created either way so the command centre can show what *should*
-          // have been said even where audio is unavailable.
+          event: "called",
+          stationId,
+          // Rendered from the hospital's own announcement template, not from
+          // the audit summary: the two say different things to different
+          // audiences, and a waiting room hears this one.
+          text: renderAnnouncement(this.#announcementConfig, "called", {
+            ticket: event.queueLabel,
+            journeyCode: (event.correlationId ?? "") as JourneyCode,
+            // The wire carries no patient name, by design. The template's
+            // {name} token therefore renders empty here whatever the policy
+            // says, which is the safe direction for something spoken aloud.
+            patientName: "",
+            stationName: stationName(this.config.config, stationId),
+            room: stationRoom(this.config.config, stationId),
+            hospitalName: this.config.config.profile.name,
+            namePolicy: "ticket_only",
+          }),
+          occurredAt: at,
           spoken: false,
         });
-        this.#commit();
-      },
-    };
-  }
-
-  /**
-   * Records notification intent and outcome.
-   *
-   * The dispatcher that actually delivers lives in the browser layer (it needs
-   * the Notification API). This subscriber records that an attempt was owed,
-   * so a channel that silently never fires is visible as `queued` attempts that
-   * never became `delivered` — the failure mode that is otherwise invisible.
-   */
-  #notificationSubscriber(): EventSubscriber {
-    return {
-      name: "notifications",
-      events: ["visit.called", "visit.routed", "visit.queued"],
-      handle: (event) => {
-        const recipient = event.type === "visit.queued" ? "staff" : "patient";
-        this.recordAttempt({
-          channel: "browser",
-          status: "queued",
-          visitId: event.visitId,
-          recipient,
-          occurredAt: event.occurredAt,
-          error: null,
-        });
-      },
-    };
-  }
-
-  /** Any action by a staff member is evidence they are at their post. */
-  #presenceSubscriber(): EventSubscriber {
-    return {
-      name: "presence",
-      handle: (event) => {
-        if (!event.actorId) return;
-        const stationId = stationOf(event);
-        this.recordActivity(event.actorId, stationId, event.occurredAt);
-      },
-    };
-  }
-
-  #contextFor(event: VisitEvent):
-    | { stationId: StationId; announcement: Parameters<typeof renderAnnouncement>[2] }
-    | null {
-    const stationId = stationOf(event);
-    if (!stationId) return null;
-
-    const payload = event.payload as Record<string, unknown>;
-    const ticket =
-      typeof payload["queueLabel"] === "string"
-        ? (payload["queueLabel"] as string)
-        : "";
-
-    return {
-      stationId,
-      announcement: {
-        ticket,
-        journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
-        patientName: (payload["patientName"] as string) ?? "",
-        stationName: stationName(stationId),
-        room: stationRoom(stationId),
-        hospitalName: this.config.config.profile.name,
-        namePolicy: this.config.config.defaults.namePolicy,
-      },
-    };
+      }
+    }
   }
 }
 
@@ -421,7 +388,10 @@ function stationOf(event: VisitEvent): StationId | null {
   return null;
 }
 
-function summarise(event: VisitEvent): string {
+function summarise(
+  event: VisitEvent,
+  configuration: HospitalConfiguration,
+): string {
   const payload = event.payload as Record<string, unknown>;
   const ticket = (payload["queueLabel"] as string) ?? "";
 
@@ -429,21 +399,21 @@ function summarise(event: VisitEvent): string {
     case "visit.created":
       return `Visit created (${payload["journeyCode"]})`;
     case "visit.queued":
-      return `Queued at ${stationName(payload["stationId"] as StationId)}${
+      return `Queued at ${stationName(configuration, payload["stationId"] as StationId)}${
         ticket ? ` as ${ticket}` : ""
       }`;
     case "visit.called":
-      return `Called at ${stationName(payload["stationId"] as StationId)}`;
+      return `Called at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.service_started":
-      return `Service started at ${stationName(payload["stationId"] as StationId)}`;
+      return `Service started at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.skipped":
-      return `Skipped at ${stationName(payload["stationId"] as StationId)}`;
+      return `Skipped at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.stage_completed":
-      return `Stage completed at ${stationName(payload["stationId"] as StationId)}`;
+      return `Stage completed at ${stationName(configuration, payload["stationId"] as StationId)}`;
     case "visit.routed":
-      return `Routed ${stationName(
+      return `Routed ${stationName(configuration, 
         payload["fromStationId"] as StationId,
-      )} → ${stationName(payload["toStationId"] as StationId)}`;
+      )} → ${stationName(configuration, payload["toStationId"] as StationId)}`;
     case "visit.completed":
       return "Visit completed";
     case "visit.cancelled":

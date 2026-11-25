@@ -48,9 +48,9 @@ export interface EntityUsage {
 }
 
 export interface ConfigurationWriter {
-  stationUsage(tx: SqlExecutor, stationId: string): Promise<EntityUsage[]>;
-  workflowUsage(tx: SqlExecutor, workflowId: string): Promise<EntityUsage[]>;
-  roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]>;
+  stationUsage(tx: SqlExecutor, hospitalId: string, stationId: string): Promise<EntityUsage[]>;
+  workflowUsage(tx: SqlExecutor, hospitalId: string, workflowId: string): Promise<EntityUsage[]>;
+  roleUsage(tx: SqlExecutor, hospitalId: string, roleId: string): Promise<EntityUsage[]>;
 
   createStation(
     tx: SqlExecutor,
@@ -67,9 +67,19 @@ export interface ConfigurationWriter {
     at: Date,
   ): Promise<void>;
 
-  deleteStation(tx: SqlExecutor, stationId: string): Promise<void>;
-  deleteWorkflow(tx: SqlExecutor, workflowId: string): Promise<void>;
-  deleteBoard(tx: SqlExecutor, boardId: string): Promise<void>;
+  /*
+   * The destructive three take the tenant, and it is not optional.
+   *
+   * A configuration change is applied to the caller's own configuration
+   * document, so a foreign id filters out of it harmlessly — but `persist`
+   * then called these with the raw id from the URL, and they deleted by id
+   * alone. An administrator at one hospital could delete another hospital's
+   * stations, workflows and boards. Scoping the DELETE itself means the id has
+   * to belong to the caller for the statement to match anything.
+   */
+  deleteStation(tx: SqlExecutor, hospitalId: string, stationId: string): Promise<void>;
+  deleteWorkflow(tx: SqlExecutor, hospitalId: string, workflowId: string): Promise<void>;
+  deleteBoard(tx: SqlExecutor, hospitalId: string, boardId: string): Promise<void>;
   deleteTicketTemplate(tx: SqlExecutor, hospitalId: string, templateId: string): Promise<void>;
 
   createRole(tx: SqlExecutor, hospitalId: string, role: RoleConfig, at: Date): Promise<void>;
@@ -100,13 +110,27 @@ function blocking(counts: ReadonlyArray<EntityUsage>): EntityUsage[] {
 }
 
 export class PostgresConfigurationWriter implements ConfigurationWriter {
-  async stationUsage(tx: SqlExecutor, stationId: string): Promise<EntityUsage[]> {
+  async stationUsage(
+    tx: SqlExecutor,
+    hospitalId: string,
+    stationId: string,
+  ): Promise<EntityUsage[]> {
+    // Zero for a station that is not this hospital's, so the counts cannot be
+    // used to probe another organization's size.
     const [row] = await tx.query<{ stages: string; entries: string; boards: string }>(
       `SELECT
-         (SELECT count(*) FROM workflow_stages WHERE station_id = $1)::text AS stages,
-         (SELECT count(*) FROM queue_entries  WHERE station_id = $1)::text AS entries,
-         (SELECT count(*) FROM display_boards WHERE $1 = ANY(station_ids))::text AS boards`,
-      [stationId],
+         (SELECT count(*) FROM workflow_stages ws
+            JOIN stations s ON s.id = ws.station_id
+            JOIN branches b ON b.id = s.branch_id
+           WHERE ws.station_id = $1 AND b.hospital_id = $2)::text AS stages,
+         (SELECT count(*) FROM queue_entries q
+            JOIN stations s ON s.id = q.station_id
+            JOIN branches b ON b.id = s.branch_id
+           WHERE q.station_id = $1 AND b.hospital_id = $2)::text AS entries,
+         (SELECT count(*) FROM display_boards d
+            JOIN branches b ON b.id = d.branch_id
+           WHERE $1 = ANY(d.station_ids) AND b.hospital_id = $2)::text AS boards`,
+      [stationId, hospitalId],
     );
     return blocking([
       { singular: "workflow stage", plural: "workflow stages", count: Number(row?.stages ?? 0) },
@@ -115,20 +139,34 @@ export class PostgresConfigurationWriter implements ConfigurationWriter {
     ]);
   }
 
-  async workflowUsage(tx: SqlExecutor, workflowId: string): Promise<EntityUsage[]> {
+  async workflowUsage(
+    tx: SqlExecutor,
+    hospitalId: string,
+    workflowId: string,
+  ): Promise<EntityUsage[]> {
     const [row] = await tx.query<{ visits: string }>(
-      `SELECT (SELECT count(*) FROM visits WHERE workflow_id = $1)::text AS visits`,
-      [workflowId],
+      `SELECT (SELECT count(*) FROM visits v
+                 JOIN branches b ON b.id = v.branch_id
+                WHERE v.workflow_id = $1 AND b.hospital_id = $2)::text AS visits`,
+      [workflowId, hospitalId],
     );
     return blocking([
       { singular: "visit", plural: "visits", count: Number(row?.visits ?? 0) },
     ]);
   }
 
-  async roleUsage(tx: SqlExecutor, roleId: string): Promise<EntityUsage[]> {
+  async roleUsage(
+    tx: SqlExecutor,
+    hospitalId: string,
+    roleId: string,
+  ): Promise<EntityUsage[]> {
+    // Scoped like stationUsage and workflowUsage. Unscoped, this counted the
+    // holders of any role id, so a refusal reading "3 users" confirmed another
+    // organization's role was real and in use.
     const [row] = await tx.query<{ users: string }>(
-      `SELECT (SELECT count(*) FROM users WHERE role_id = $1)::text AS users`,
-      [roleId],
+      `SELECT (SELECT count(*) FROM users
+                WHERE role_id = $1 AND hospital_id = $2)::text AS users`,
+      [roleId, hospitalId],
     );
     return blocking([
       { singular: "user", plural: "users", count: Number(row?.users ?? 0) },
@@ -235,18 +273,41 @@ export class PostgresConfigurationWriter implements ConfigurationWriter {
     );
   }
 
-  async deleteStation(tx: SqlExecutor, stationId: string): Promise<void> {
-    await tx.query(`DELETE FROM stations WHERE id = $1`, [stationId]);
+  async deleteStation(
+    tx: SqlExecutor,
+    hospitalId: string,
+    stationId: string,
+  ): Promise<void> {
+    await tx.query(
+      `DELETE FROM stations s
+        USING branches b
+        WHERE s.id = $1 AND b.id = s.branch_id AND b.hospital_id = $2`,
+      [stationId, hospitalId],
+    );
   }
 
-  async deleteWorkflow(tx: SqlExecutor, workflowId: string): Promise<void> {
+  async deleteWorkflow(
+    tx: SqlExecutor,
+    hospitalId: string,
+    workflowId: string,
+  ): Promise<void> {
     // Stages cascade with the workflow, which is correct: a stage has no
     // meaning apart from the workflow it belongs to.
-    await tx.query(`DELETE FROM workflows WHERE id = $1`, [workflowId]);
+    await tx.query(
+      `DELETE FROM workflows w
+        USING branches b
+        WHERE w.id = $1 AND b.id = w.branch_id AND b.hospital_id = $2`,
+      [workflowId, hospitalId],
+    );
   }
 
-  async deleteBoard(tx: SqlExecutor, boardId: string): Promise<void> {
-    await tx.query(`DELETE FROM display_boards WHERE id = $1`, [boardId]);
+  async deleteBoard(tx: SqlExecutor, hospitalId: string, boardId: string): Promise<void> {
+    await tx.query(
+      `DELETE FROM display_boards d
+        USING branches b
+        WHERE d.id = $1 AND b.id = d.branch_id AND b.hospital_id = $2`,
+      [boardId, hospitalId],
+    );
   }
 
   async deleteTicketTemplate(

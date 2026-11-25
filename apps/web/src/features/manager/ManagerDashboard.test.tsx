@@ -1,17 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { ManagerDashboard } from "./ManagerDashboard.js";
-import { CURRENT_USER, ClinicStore } from "../../data/clinic-store.js";
-import { STATIONS } from "../../data/demo-clinic.js";
+import type { ClinicStore } from "../../data/clinic-store.js";
+import {
+  createFixture,
+  STATION_IDS,
+  USER_ID,
+  type Fixture,
+} from "../../test/api-fixture.js";
 
 describe("Manager Dashboard", () => {
+  let fixture: Fixture;
   let store: ClinicStore;
 
-  beforeEach(() => {
-    store = new ClinicStore();
+  beforeEach(async () => {
+    fixture = await createFixture();
+    store = fixture.clinic;
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
   it("renders the control centre", () => {
     render(<ManagerDashboard store={store} />);
@@ -56,7 +66,7 @@ describe("Manager Dashboard", () => {
 
   it("puts no patient name anywhere on the dashboard", () => {
     render(<ManagerDashboard store={store} />);
-    for (const { visit } of store.visits) {
+    for (const visit of store.visits) {
       expect(screen.queryByText(visit.patient.name)).toBeNull();
     }
   });
@@ -95,12 +105,14 @@ describe("Manager Dashboard", () => {
     expect(within(card).getByText(/case mix/i)).toBeDefined();
   });
 
-  it("updates live when a station acts, with no refresh", () => {
+  it("updates live when a station acts, with no refresh", async () => {
     render(<ManagerDashboard store={store} />);
     const before = store.pulse(new Date()).beingServed;
 
-    act(() => {
-      store.callNext(STATIONS.pharmacy, CURRENT_USER);
+    // The action reaches the server, so the assertion waits for the answer
+    // rather than for the click.
+    await act(async () => {
+      await store.callNext(STATION_IDS.pharmacy, USER_ID);
     });
 
     const servedTile = screen.getByText(/being served/i).closest("article")!;
@@ -109,14 +121,14 @@ describe("Manager Dashboard", () => {
     ).toBeDefined();
   });
 
-  it("says so plainly when every station is within target", () => {
+  it("says so plainly when every station is within target", async () => {
     // Clear every queue. A queued visit must be called before it can be
     // completed — the state machine allows no shortcut — so do both, and assert
     // each step landed rather than letting a silent refusal pass as success.
     for (const worklist of store.allWorklists()) {
       for (const item of [...worklist.waiting, ...(worklist.current ? [worklist.current] : [])]) {
-        store.recall(item.visitId, CURRENT_USER);
-        expect(store.complete(item.visitId, CURRENT_USER).ok).toBe(true);
+        await store.recall(item.visitId, USER_ID);
+        expect((await store.complete(item.visitId, USER_ID)).ok).toBe(true);
       }
     }
     expect(store.pulse(new Date()).waiting).toBe(0);

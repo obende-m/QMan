@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { AuthService, createMemoryLockoutStore } from "./auth.js";
+import { fakeOrganizations } from "./config-fixtures.js";
 import { buildServer } from "./server.js";
 import type { AccountRepository, SessionRepository } from "@qman/persistence";
 
@@ -37,7 +38,7 @@ function server(overrides: { https?: boolean } = {}) {
       now: () => new Date("2026-03-09T09:00:00Z"),
       newId: () => "session-1",
     }),
-    resolveHospital: () => HOSPITAL,
+    organizations: fakeOrganizations(),
     secureCookies: true,
     allowedOrigins: [ORIGIN],
     ...overrides,

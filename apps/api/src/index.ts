@@ -20,6 +20,11 @@ import {
   PostgresSessionRepository,
   PostgresTicketAllocator,
   PostgresVisitRepository,
+  PostgresOrganizationDirectory,
+  PostgresPlatformEventRepository,
+  PostgresPlatformLockoutRepository,
+  PostgresPlatformSessionRepository,
+  PostgresPlatformUserRepository,
 } from "@qman/persistence";
 import { EventStream } from "./stream.js";
 import { ConfigurationService } from "./configuration-service.js";
@@ -30,6 +35,9 @@ import { connect } from "./database.js";
 import { createLogger } from "./logging.js";
 import { loadMigrations } from "./migrations.js";
 import { buildServer } from "./server.js";
+import { PlatformAuthService } from "./platform-auth.js";
+import { createPlatformLockoutStore } from "./platform-lockout.js";
+import { PostgresOrganizationProvisioning } from "./provisioning.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -52,15 +60,30 @@ async function main(): Promise<void> {
     newId: () => randomUUID(),
   });
 
+  const organizations = new PostgresOrganizationDirectory(db);
+  const platformUsers = new PostgresPlatformUserRepository(db);
+  const platformAuth = new PlatformAuthService({
+    users: platformUsers,
+    sessions: new PostgresPlatformSessionRepository(db),
+    lockouts: createPlatformLockoutStore(new PostgresPlatformLockoutRepository(db), now),
+    now,
+  });
+
   const configurationWriter = new PostgresConfigurationWriter();
   const visitDependencies = { clock: { now }, ids: { next: randomUUID } };
   const visitRepository = new PostgresVisitRepository(db, visitDependencies);
   const stream = new EventStream();
   const app = buildServer({
     auth,
+    organizations,
+    platform: {
+      auth: platformAuth,
+      events: new PostgresPlatformEventRepository(db),
+      users: platformUsers,
+      provisioning: new PostgresOrganizationProvisioning(db, configurationWriter),
+    },
     logger,
     stream,
-    resolveHospital: () => config.hospitalId,
     secureCookies: config.secureCookies,
     allowedOrigins: config.allowedOrigins,
     https: config.secureCookies,
@@ -70,14 +93,14 @@ async function main(): Promise<void> {
       writer: configurationWriter,
       idempotency: {
         repository: new PostgresIdempotencyRepository(db),
-        resolveHospital: () => config.hospitalId,
-        logger,
+            logger,
         now,
       },
     },
     publicSurfaces: {
       visits: new PostgresVisitRepository(db, { clock: { now }, ids: { next: randomUUID } }),
       boards: new PostgresBoardDirectory(db),
+      organizations,
     },
     queue: {
       visits: visitRepository,
@@ -92,8 +115,7 @@ async function main(): Promise<void> {
       },
       idempotency: {
         repository: new PostgresIdempotencyRepository(db),
-        resolveHospital: () => config.hospitalId,
-        logger,
+            logger,
         now,
       },
     },
@@ -127,7 +149,6 @@ async function main(): Promise<void> {
   logger.info("listening", {
     host: config.host,
     port: config.port,
-    hospitalId: config.hospitalId,
     secureCookies: config.secureCookies,
     allowedOrigins: config.allowedOrigins,
   });

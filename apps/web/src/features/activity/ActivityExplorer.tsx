@@ -11,7 +11,7 @@ import { useOperations } from "../../data/useOperations.js";
 import { useAuth } from "../../data/useAuth.js";
 import type { AuditEntry, OperationsStore } from "../../data/operations-store.js";
 import type { AuthStore } from "../../data/auth-store.js";
-import { userName } from "../../data/demo-clinic.js";
+import { staffLabel } from "../../data/clinic-projections.js";
 
 /**
  * The Activity & Audit Explorer.
@@ -287,7 +287,7 @@ function ActivityTimeline({
 
               <span className="shrink-0 text-right">
                 <span className="block text-body-sm text-on-surface-variant">
-                  {entry.actorId ? userName(entry.actorId) : "System"}
+                  {entry.actorId ? staffLabel(entry.actorId) : "System"}
                 </span>
                 <span className="block font-mono text-label-caps uppercase text-on-surface-variant">
                   {entry.occurredAt.toLocaleTimeString([], {
@@ -364,10 +364,7 @@ function AuditLog({
                     })}
                   </td>
                   <td className="px-gutter py-3 text-body-sm text-on-surface">
-                    {entry.actorId
-                      ? (auth.account(entry.actorId)?.displayName ??
-                        userName(entry.actorId))
-                      : "—"}
+                    {entry.actorId ? staffLabel(entry.actorId) : "—"}
                   </td>
                   <td className="px-gutter py-3 text-body-md text-on-surface">
                     {entry.summary}

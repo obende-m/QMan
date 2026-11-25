@@ -1,0 +1,50 @@
+# Fly.io service definition for the QMan API.
+#
+# The web app is not here: it is static and belongs on Vercel. This is the
+# long-running Fastify server, which holds a PostgreSQL pool and open
+# Server-Sent Events connections.
+
+app = "qman-api"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3001"
+  NODE_ENV = "production"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+
+  # Never scaled to zero.
+  #
+  # A display board holds an SSE connection open and a suspended machine drops
+  # it. Reconnection would recover, but a waiting-room screen that reconnects
+  # every few minutes is one that regularly shows nothing, and the first
+  # request after a cold start waits for a database pool to open.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "connections"
+    # Generous, because SSE connections are long-lived and nearly idle. Sized
+    # for concurrent boards and workstations, not for requests per second.
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  # The health endpoint is deliberately unversioned: it answers "is this
+  # process alive", which is not a business capability and must not move when
+  # the API version does.
+  path = "/api/health"
+  interval = "15s"
+  timeout = "3s"
+  grace_period = "20s"
+  method = "GET"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

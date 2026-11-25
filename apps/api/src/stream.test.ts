@@ -135,10 +135,48 @@ describe("audience projections", () => {
 });
 
 describe("event fan-out", () => {
-  function subscriber(audience: "staff" | "public", branchId: string | null = "branch-main") {
+  function subscriber(
+    audience: "staff" | "public",
+    branchId: string | null = "branch-main",
+    hospitalId = "hospital-1",
+  ) {
     const received: string[] = [];
-    return { received, spec: { branchId, audience, send: (c: string) => received.push(c) } };
+    return {
+      received,
+      spec: { hospitalId, branchId, audience, send: (c: string) => received.push(c) },
+    };
   }
+
+  /**
+   * The tenant boundary, which a null branch used to bypass entirely.
+   *
+   * A subscriber with no branch means "every branch I am entitled to", and
+   * before the audit there was nothing establishing what it was entitled to —
+   * so an administrator not pinned to a branch received every organization's
+   * events live, Journey Codes and summaries included.
+   */
+  it("never delivers across organizations, even to a subscriber with no branch", () => {
+    const stream = new EventStream();
+    const outsider = subscriber("staff", null, "hospital-2");
+    const insider = subscriber("staff", null, "hospital-1");
+    stream.subscribe(outsider.spec);
+    stream.subscribe(insider.spec);
+
+    stream.publish(record());
+
+    expect(outsider.received).toEqual([]);
+    expect(insider.received).toHaveLength(1);
+  });
+
+  it("never delivers another organization's events to a public board", () => {
+    const stream = new EventStream();
+    const board = subscriber("public", "branch-main", "hospital-2");
+    stream.subscribe(board.spec);
+
+    stream.publish(record());
+
+    expect(board.received).toEqual([]);
+  });
 
   it("delivers to every subscriber in the branch", () => {
     const stream = new EventStream();
@@ -203,6 +241,7 @@ describe("event fan-out", () => {
     const stream = new EventStream();
     const healthy = subscriber("staff");
     stream.subscribe({
+      hospitalId: "hospital-1",
       branchId: "branch-main",
       audience: "staff",
       send: () => {

@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { ConfigStore, configStore } from "./config-store.js";
+import type { ConfigStore } from "./config-store.js";
+import { stores } from "./runtime-stores.js";
 
 /**
  * Subscribes a component to the hospital configuration.
@@ -8,7 +9,7 @@ import { ConfigStore, configStore } from "./config-store.js";
  * clinic state changes constantly, so a display board re-rendering on every
  * patient call should not also re-render when nothing about its setup moved.
  */
-export function useConfig(store: ConfigStore = configStore): ConfigStore {
+export function useConfig(store: ConfigStore = stores.config): ConfigStore {
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion);
   return store;
 }

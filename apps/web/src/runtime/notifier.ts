@@ -4,10 +4,10 @@ import {
   type VisitEvent,
   type VisitId,
 } from "@qman/domain";
-import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
-import { stationName, stationRoom } from "../data/demo-clinic.js";
+import { stationName, stationRoom } from "../data/clinic-projections.js";
+import type { StreamEventLike } from "../data/operations-store.js";
 import type { NotificationPort } from "./ports.js";
 
 /**
@@ -51,102 +51,90 @@ export class Notifier {
    * news, a stage completing is not. Anything more would train staff to
    * dismiss without reading.
    */
-  staffSubscriber(stationId: StationId): EventSubscriber {
-    return {
-      name: `staff-notifier:${stationId}`,
-      events: ["visit.queued", "visit.priority_changed"],
-      handle: (event) => {
-        const payload = event.payload as Record<string, unknown>;
+  /**
+   * Staff notifications, from the server's event stream.
+   *
+   * The same path OperationsStore takes: the browser produces no domain events
+   * any more, so this reads the staff projection — type, station, ticket and a
+   * summary rendered once at write time.
+   *
+   * The projection carries no priority, so the "urgent patient waiting"
+   * variant cannot be distinguished here. It is one notification rather than
+   * two, which is the honest reading of what the wire says.
+   */
+  attachToStream(
+    stream: { onEvent: (listener: (event: StreamEventLike) => void) => () => void },
+    stationId: StationId,
+  ): () => void {
+    return stream.onEvent((event) => {
+      if (event.type !== "visit.queued") return;
+      if (event.stationId !== stationId) return;
 
-        if (event.type === "visit.queued") {
-          if (payload["stationId"] !== stationId) return;
-          const ticket = (payload["queueLabel"] as string) ?? "";
-          const priority = payload["priority"] as string;
-          const urgent = priority === "emergency" || priority === "high";
-
-          void this.#deliver({
-            title: urgent
-              ? `${priority === "emergency" ? "Emergency" : "Urgent"} patient waiting`
-              : "New patient in your queue",
-            body: `${ticket} joined ${stationName(stationId)}.`,
-            tag: `queue-${stationId}`,
-            requireInteraction: urgent,
-            visitId: event.visitId,
-            recipient: "staff",
-          });
-          return;
-        }
-
-        // An escalation at this station needs attention even if the patient was
-        // already waiting.
-        if (payload["to"] === "emergency") {
-          void this.#deliver({
-            title: "Patient escalated to Emergency",
-            body: `A patient at ${stationName(stationId)} now needs urgent attention.`,
-            tag: `escalation-${stationId}`,
-            requireInteraction: true,
-            visitId: event.visitId,
-            recipient: "staff",
-          });
-        }
-      },
-    };
+      void this.#deliver({
+        title: "New patient in your queue",
+        body: `${event.queueLabel ?? ""} joined ${stationName(
+          this.options.config.config,
+          stationId,
+        )}.`.trim(),
+        tag: `queue-${stationId}`,
+        requireInteraction: false,
+        visitId: event.visitId as VisitId | null,
+        recipient: "staff",
+      });
+    });
   }
 
   /**
-   * Patient notifications for one visit.
+   * Patient notifications for one visit, from the same stream.
    *
-   * Uses the same rendered announcement text as the voice system, so what the
-   * patient reads on their phone matches what is said aloud in the room
-   * (ADR-030).
+   * Uses the announcement template so what a patient reads on their phone
+   * matches what is said aloud in the room (ADR-030). The wire carries no
+   * patient name, so `{name}` renders empty whatever the policy says.
    */
-  patientSubscriber(visitId: VisitId): EventSubscriber {
-    return {
-      name: `patient-notifier:${visitId}`,
-      events: ["visit.called", "visit.routed", "visit.completed"],
-      handle: (event) => {
-        if (event.visitId !== visitId) return;
+  attachPatientToStream(
+    stream: { onEvent: (listener: (event: StreamEventLike) => void) => () => void },
+    visitId: VisitId,
+  ): () => void {
+    return stream.onEvent((event) => {
+      if (event.visitId !== visitId) return;
 
-        const config = this.options.operations.announcementConfig;
-        const payload = event.payload as Record<string, unknown>;
-        const stationId =
-          (payload["stationId"] as StationId | undefined) ??
-          (payload["toStationId"] as StationId | undefined);
-        if (!stationId) return;
+      const announcementEvent =
+        event.type === "visit.called"
+          ? "called"
+          : event.type === "visit.routed"
+            ? "routed"
+            : event.type === "visit.completed"
+              ? "completed"
+              : null;
+      if (announcementEvent === null) return;
 
-        const announcementEvent =
-          event.type === "visit.called"
-            ? (payload["callAttempt"] as number) > 1
-              ? "recalled"
-              : "called"
-            : event.type === "visit.routed"
-              ? "routed"
-              : "completed";
-
-        const body = renderAnnouncement(config, announcementEvent, {
-          ticket: (payload["queueLabel"] as string) ?? "",
-          journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
-          patientName: (payload["patientName"] as string) ?? "",
-          stationName: stationName(stationId),
-          room: stationRoom(stationId),
+      const stationId = (event.stationId ?? "") as StationId;
+      const body = renderAnnouncement(
+        this.options.operations.announcementConfig,
+        announcementEvent,
+        {
+          ticket: event.queueLabel ?? "",
+          journeyCode: (event.correlationId ?? "") as never,
+          patientName: "",
+          stationName: stationName(this.options.config.config, stationId),
+          room: stationRoom(this.options.config.config, stationId),
           hospitalName: this.options.config.config.profile.name,
-          namePolicy: this.options.config.config.defaults.namePolicy,
-        });
+          namePolicy: "ticket_only",
+        },
+      );
 
-        const isTurn = event.type === "visit.called";
-
-        void this.#deliver({
-          title: isTurn ? "It's your turn" : titleFor(event),
-          body,
-          // One tag per visit: a recall replaces the previous notification
-          // rather than stacking a second one.
-          tag: `visit-${visitId}`,
-          requireInteraction: isTurn,
-          visitId,
-          recipient: "patient",
-        });
-      },
-    };
+      const isTurn = event.type === "visit.called";
+      void this.#deliver({
+        title: isTurn ? "It's your turn" : "Your visit has moved on",
+        // One tag per visit: a recall replaces the previous notification
+        // rather than stacking a second one.
+        tag: `visit-${visitId}`,
+        body,
+        requireInteraction: isTurn,
+        visitId,
+        recipient: "patient",
+      });
+    });
   }
 
   async #deliver(input: {

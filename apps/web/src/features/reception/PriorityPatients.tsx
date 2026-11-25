@@ -6,8 +6,9 @@ import { StatusChip, priorityChip } from "../../components/ui/StatusChip.js";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import { formatDuration } from "../../data/useClinic.js";
-import type { DemoVisit } from "../../data/demo-clinic.js";
-import { stationName } from "../../data/demo-clinic.js";
+import type { Visit } from "@qman/domain";
+import { stationName } from "../../data/clinic-projections.js";
+import { useConfig } from "../../data/useConfig.js";
 
 /**
  * Priority Patients.
@@ -22,7 +23,7 @@ import { stationName } from "../../data/demo-clinic.js";
  * confusion ADR-006 exists to prevent.
  */
 export interface PriorityPatientsProps {
-  visits: readonly DemoVisit[];
+  visits: readonly Visit[];
   now: Date;
   onOpen?: (visitId: string) => void;
 }
@@ -75,7 +76,7 @@ export function PriorityPatients({
       <ul className="divide-y divide-outline-variant">
         {visits.map((entry) => (
           <PriorityRow
-            key={entry.visit.id}
+            key={entry.id}
             entry={entry}
             now={now}
             {...(onOpen ? { onOpen } : {})}
@@ -91,13 +92,14 @@ function PriorityRow({
   now,
   onOpen,
 }: {
-  entry: DemoVisit;
+  entry: Visit;
   now: Date;
   onOpen?: (visitId: string) => void;
 }) {
-  const { visit, arrivedAt } = entry;
+  const config = useConfig();
+  const visit = entry;
   const chip = priorityChip(visit.priority);
-  const waited = now.getTime() - arrivedAt.getTime();
+  const waited = now.getTime() - visit.createdAt.getTime();
   const breached = isBreaching(entry, now);
   const stationId = visit.currentStationId;
 
@@ -121,7 +123,7 @@ function PriorityRow({
           <div className="mt-0.5 flex flex-wrap items-center gap-2">
             <JourneyCode code={visit.journeyCode} />
             <span className="text-body-sm text-on-surface-variant">
-              {stationId ? stationName(stationId) : "Not in a queue"}
+              {stationId ? stationName(config.config, stationId) : "Not in a queue"}
             </span>
           </div>
         </div>
@@ -155,9 +157,9 @@ function PriorityRow({
   );
 }
 
-function isBreaching(entry: DemoVisit, now: Date): boolean {
-  const priority = entry.visit.priority;
+function isBreaching(entry: Visit, now: Date): boolean {
+  const priority = entry.priority;
   if (priority !== "emergency" && priority !== "high") return false;
-  const minutes = (now.getTime() - entry.arrivedAt.getTime()) / 60_000;
+  const minutes = (now.getTime() - entry.createdAt.getTime()) / 60_000;
   return minutes > SLA_MINUTES[priority];
 }

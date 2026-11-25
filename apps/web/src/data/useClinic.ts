@@ -1,5 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
-import { ClinicStore, clinicStore } from "./clinic-store.js";
+import type { ClinicStore } from "./clinic-store.js";
+import { stores } from "./runtime-stores.js";
 
 /**
  * Subscribes a component to the clinic store.
@@ -9,7 +10,7 @@ import { ClinicStore, clinicStore } from "./clinic-store.js";
  * on render keeps every screen consistent with a single version number instead
  * of a web of memoised selectors that can disagree.
  */
-export function useClinic(store: ClinicStore = clinicStore): ClinicStore {
+export function useClinic(store: ClinicStore = stores.clinic): ClinicStore {
   useSyncExternalStore(store.subscribe, store.getVersion, store.getVersion);
   return store;
 }

@@ -14,7 +14,7 @@ import { cn } from "../../components/ui/cn.js";
 import type { ConfigStore } from "../../data/config-store.js";
 import { inputClass } from "../../data/useConfig.js";
 import { Field, Toggle } from "./StationsSection.js";
-import { ProblemList, SaveFeedback, useSaveFeedback } from "./shared.js";
+import { ProblemList, SaveFeedback, useSaveFeedback , DraftInput} from "./shared.js";
 
 export function DisplayBoardsSection({
   store,
@@ -39,19 +39,24 @@ export function DisplayBoardsSection({
               size="sm"
               icon={<Plus className="size-4" />}
               onClick={() => {
-                const id = `board-${Date.now()}`;
                 const first = store.publicStations()[0];
                 if (!first) return;
-                const result = store.addBoard({
-                  id,
-                  name: "New Board",
-                  stationIds: [first.id],
-                  waitingToShow: 4,
-                  namePolicy: store.config.defaults.namePolicy,
-                  showEstimatedWait: true,
-                  showRoom: true,
-                });
-                if (result.ok) setSelectedId(id);
+                // The server mints the identifier, so the new board is the one
+                // that was not there before rather than one chosen here.
+                const before = new Set(store.config.displayBoards.map((b) => b.id));
+                void (async () => {
+                  const result = await store.addBoard({
+                    name: "New Board",
+                    stationIds: [first.id],
+                    waitingToShow: 4,
+                    namePolicy: store.config.defaults.namePolicy,
+                    showEstimatedWait: true,
+                    showRoom: true,
+                  });
+                  if (!result.ok) return;
+                  const created = store.config.displayBoards.find((b) => !before.has(b.id));
+                  if (created) setSelectedId(created.id);
+                })();
               }}
             >
               Add board
@@ -137,11 +142,11 @@ function BoardEditor({
 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Board name">
-            <input
-              className={inputClass}
-              value={board.name}
-              onChange={(e) => save({ name: e.target.value })}
-            />
+            <DraftInput
+                className={inputClass}
+                value={board.name}
+                onCommit={(next) => save({ name: next })}
+              />
           </Field>
           <Field
             label="Waiting tickets to show"

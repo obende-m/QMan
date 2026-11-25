@@ -5,10 +5,10 @@ import {
   type StationId,
   type VisitEvent,
 } from "@qman/domain";
-import type { EventSubscriber } from "../data/event-bus.js";
 import type { OperationsStore } from "../data/operations-store.js";
 import type { ConfigStore } from "../data/config-store.js";
-import { stationName, stationRoom } from "../data/demo-clinic.js";
+import { stationName, stationRoom } from "../data/clinic-projections.js";
+import type { StreamEventLike } from "../data/operations-store.js";
 import type { ChimePort, SpeechPort } from "./ports.js";
 
 /**
@@ -37,23 +37,45 @@ export class VoiceAnnouncer {
 
   constructor(private readonly options: AnnouncerOptions) {}
 
-  subscriber(): EventSubscriber {
-    return {
-      name: "voice-announcer",
-      events: ["visit.called", "visit.routed", "visit.completed"],
-      handle: (event) => {
-        const config = this.options.operations.announcementConfig;
-        if (!config.enabled) return;
+  /**
+   * Speaks from the server's event stream, as the notifier and the operations
+   * store do. The projection carries no patient name, so `{name}` renders
+   * empty whatever the policy says — which is the right direction for
+   * something said out loud in a room full of people.
+   */
+  attachToStream(stream: {
+    onEvent: (listener: (event: StreamEventLike) => void) => () => void;
+  }): () => void {
+    return stream.onEvent((event) => {
+      const config = this.options.operations.announcementConfig;
+      if (!config.enabled) return;
 
-        const announcementEvent = toAnnouncementEvent(event);
-        if (!announcementEvent) return;
+      const announcementEvent =
+        event.type === "visit.called"
+          ? "called"
+          : event.type === "visit.routed"
+            ? "routed"
+            : event.type === "visit.completed"
+              ? "completed"
+              : null;
+      if (announcementEvent === null) return;
 
-        const text = this.#render(config, announcementEvent, event);
-        if (!text) return;
+      const stationId = (event.stationId ?? "") as StationId;
+      if (stationId === "") return;
 
-        this.#enqueue(config, text);
-      },
-    };
+      this.#enqueue(
+        config,
+        renderAnnouncement(config, announcementEvent, {
+          ticket: event.queueLabel ?? "",
+          journeyCode: (event.correlationId ?? "") as never,
+          patientName: "",
+          stationName: stationName(this.options.config.config, stationId),
+          room: stationRoom(this.options.config.config, stationId),
+          hospitalName: this.options.config.config.profile.name,
+          namePolicy: "ticket_only",
+        }),
+      );
+    });
   }
 
   #render(
@@ -71,8 +93,8 @@ export class VoiceAnnouncer {
       ticket: (payload["queueLabel"] as string) ?? "",
       journeyCode: (payload["journeyCode"] as never) ?? ("" as never),
       patientName: (payload["patientName"] as string) ?? "",
-      stationName: stationName(stationId),
-      room: stationRoom(stationId),
+      stationName: stationName(this.options.config.config, stationId),
+      room: stationRoom(this.options.config.config, stationId),
       hospitalName: this.options.config.config.profile.name,
       namePolicy: this.options.config.config.defaults.namePolicy,
     });

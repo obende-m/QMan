@@ -97,6 +97,12 @@ suite("persistence against real PostgreSQL", () => {
         "004_idempotency",
         "005_tracking_tokens",
         "006_deferred_current_entry",
+        "007_platform_users",
+        "008_platform_sessions",
+        "009_platform_events",
+        "010_platform_login_throttle",
+        "011_organization_lifecycle",
+        "012_administrative_events_have_no_branch",
       ]);
     }, 120_000);
 
@@ -140,7 +146,10 @@ suite("persistence against real PostgreSQL", () => {
     it("applies nothing on a second run", async () => {
       const outcome = await migrate(db, loadMigrations());
       expect(outcome.applied).toEqual([]);
-      expect(outcome.skipped).toHaveLength(6);
+      // Every migration that ships, skipped. Counted from the loader rather
+      // than hardcoded, so adding one cannot make this pass by describing
+      // fewer migrations than exist.
+      expect(outcome.skipped).toHaveLength(loadMigrations().length);
     }, 60_000);
 
     it("refuses to run when an applied migration has been edited", async () => {
@@ -617,7 +626,7 @@ suite("persistence against real PostgreSQL", () => {
      * the stage written above.
      */
     it("counts what refers to a station", async () => {
-      const usage = await db.transaction((tx) => writer.stationUsage(tx, CREATED_STATION));
+      const usage = await db.transaction((tx) => writer.stationUsage(tx, HOSPITAL, CREATED_STATION));
       expect(usage.find((u) => u.singular === "workflow stage")?.count).toBe(1);
     });
 
@@ -643,8 +652,8 @@ suite("persistence against real PostgreSQL", () => {
         ),
       );
 
-      expect(await db.transaction((tx) => writer.stationUsage(tx, spare))).toEqual([]);
-      await db.transaction((tx) => writer.deleteStation(tx, spare));
+      expect(await db.transaction((tx) => writer.stationUsage(tx, HOSPITAL, spare))).toEqual([]);
+      await db.transaction((tx) => writer.deleteStation(tx, HOSPITAL, spare));
 
       const stations = (await new PostgresConfigurationRepository(db).load(HOSPITAL))!.stations;
       expect(stations.map((s) => s.id)).not.toContain(spare);
@@ -656,7 +665,7 @@ suite("persistence against real PostgreSQL", () => {
      * cascade in this area that is deliberate.
      */
     it("deletes a workflow and its stages together", async () => {
-      await db.transaction((tx) => writer.deleteWorkflow(tx, CREATED_WORKFLOW));
+      await db.transaction((tx) => writer.deleteWorkflow(tx, HOSPITAL, CREATED_WORKFLOW));
 
       const configuration = await new PostgresConfigurationRepository(db).load(HOSPITAL);
       expect(configuration!.workflows.map((w) => w.id)).not.toContain(CREATED_WORKFLOW);
@@ -736,7 +745,7 @@ suite("persistence against real PostgreSQL", () => {
     });
 
     it("counts the users holding a role", async () => {
-      const usage = await db.transaction((tx) => writer.roleUsage(tx, ROLE));
+      const usage = await db.transaction((tx) => writer.roleUsage(tx, HOSPITAL, ROLE));
       expect(usage.find((u) => u.singular === "user")?.count).toBe(1);
     });
   });

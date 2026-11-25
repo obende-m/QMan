@@ -1,11 +1,12 @@
 import {
   orderedStages,
+  type HospitalConfiguration,
   type StationId,
   type Visit,
   type Workflow,
 } from "@qman/domain";
 import type { TimelineStep } from "../components/ui/JourneyTimeline.js";
-import { stationName } from "./demo-clinic.js";
+import { stationName } from "./clinic-projections.js";
 
 /**
  * Builds a visit's journey as timeline steps.
@@ -19,6 +20,7 @@ import { stationName } from "./demo-clinic.js";
 export function journeySteps(
   visit: Visit,
   workflow: Workflow,
+  configuration: HospitalConfiguration,
   options: { includeUpcoming?: boolean } = {},
 ): TimelineStep[] {
   const { includeUpcoming = true } = options;
@@ -27,7 +29,7 @@ export function journeySteps(
 
   for (const entry of visit.queueEntries) {
     visited.add(entry.stationId);
-    const name = stationName(entry.stationId);
+    const name = stationName(configuration, entry.stationId);
     const isOpen =
       entry.status === "waiting" ||
       entry.status === "called" ||
@@ -63,7 +65,7 @@ export function journeySteps(
     if (!stage.isRequired) continue;
     steps.push({
       id: `upcoming-${stage.id}`,
-      title: stationName(stage.stationId),
+      title: stationName(configuration, stage.stationId),
       state: "upcoming",
     });
   }

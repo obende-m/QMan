@@ -1,3 +1,4 @@
+import { useConfig } from "../../data/useConfig.js";
 import { useMemo } from "react";
 import {
   Activity,
@@ -15,7 +16,7 @@ import { StatusChip } from "../../components/ui/StatusChip.js";
 import { Button } from "../../components/ui/Button.js";
 import { cn } from "../../components/ui/cn.js";
 import type { ClinicStore } from "../../data/clinic-store.js";
-import { slaFor, stationName, userName } from "../../data/demo-clinic.js";
+import { slaFor, staffLabel, stationName } from "../../data/clinic-projections.js";
 import { formatDuration, useClinic, useNow } from "../../data/useClinic.js";
 
 /**
@@ -141,6 +142,7 @@ function Bottlenecks({
   bottlenecks: readonly StationHealth[];
   onOpenStation?: (stationId: string) => void;
 }) {
+  const config = useConfig();
   if (bottlenecks.length === 0) {
     return (
       <Card className="border-tertiary/30 bg-tertiary/5">
@@ -173,7 +175,7 @@ function Bottlenecks({
 
       <ul className="divide-y divide-outline-variant">
         {bottlenecks.map((station) => {
-          const target = slaFor(station.stationId).targetWaitMillis;
+          const target = slaFor(config.config, station.stationId).targetWaitMillis;
           return (
             <li
               key={station.stationId}
@@ -189,7 +191,7 @@ function Bottlenecks({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-body-md font-semibold text-on-surface">
-                    {stationName(station.stationId)}
+                    {stationName(config.config, station.stationId)}
                   </span>
                   <StatusChip
                     tone={station.status === "breached" ? "urgent" : "waiting"}
@@ -227,6 +229,7 @@ function LongestWaitingCard({
   longest: ReturnType<ClinicStore["longestWaiting"]>;
   onOpenStation?: (stationId: string) => void;
 }) {
+  const config = useConfig();
   return (
     <Card>
       <CardHeader
@@ -242,7 +245,7 @@ function LongestWaitingCard({
                 who the patient is. Identity lives one click away in the station
                 workspace, behind that station's permissions. */}
             <p className="text-headline-lg font-bold tracking-tight text-on-surface">
-              {stationName(longest.stationId)}
+              {stationName(config.config, longest.stationId)}
             </p>
             <p className="mt-2 font-mono text-label-caps uppercase text-on-surface-variant">
               Ticket
@@ -256,7 +259,7 @@ function LongestWaitingCard({
             <p
               className={cn(
                 "text-display-lg font-bold tabular-nums",
-                longest.waitedMillis >= slaFor(longest.stationId).targetWaitMillis
+                longest.waitedMillis >= slaFor(config.config, longest.stationId).targetWaitMillis
                   ? "text-error"
                   : "text-on-surface",
               )}
@@ -291,6 +294,7 @@ function StationLoad({
   health: readonly StationHealth[];
   onOpenStation?: (stationId: string) => void;
 }) {
+  const config = useConfig();
   const busiest = Math.max(1, ...health.map((h) => h.waiting));
 
   return (
@@ -309,7 +313,7 @@ function StationLoad({
                 disabled={!onOpenStation}
                 className="text-body-md font-semibold text-on-surface hover:text-primary disabled:hover:text-on-surface"
               >
-                {stationName(station.stationId)}
+                {stationName(config.config, station.stationId)}
               </button>
               <p className="font-mono text-label-caps uppercase text-on-surface-variant">
                 {station.waiting} waiting
@@ -324,7 +328,7 @@ function StationLoad({
               aria-valuenow={station.waiting}
               aria-valuemin={0}
               aria-valuemax={busiest}
-              aria-label={`${stationName(station.stationId)} queue length`}
+              aria-label={`${stationName(config.config, station.stationId)} queue length`}
               className="mt-1.5 h-2 w-full overflow-hidden rounded-full bg-surface-container-high"
             >
               <div
@@ -379,7 +383,7 @@ function StaffWorkloadCard({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="truncate text-body-md font-semibold text-on-surface">
-                    {userName(staff.userId)}
+                    {staffLabel(staff.userId)}
                   </span>
                   {staff.active && (
                     <StatusChip tone="in-progress" label="With patient" />

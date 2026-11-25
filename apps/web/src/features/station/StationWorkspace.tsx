@@ -20,15 +20,11 @@ import {
 } from "../../components/ui/StatusChip.js";
 import { useAnnouncer } from "../../components/ui/Announcer.js";
 import { cn } from "../../components/ui/cn.js";
-import {
-  CURRENT_USER,
-  type ActionResult,
-  type ClinicStore,
-} from "../../data/clinic-store.js";
-import {
-  currentWorkflow,
-  stationName as stationNameFor,
-} from "../../data/demo-clinic.js";
+import type { UserId } from "@qman/domain";
+import type { ActionResult, ClinicStore } from "../../data/clinic-store.js";
+import { useAuth } from "../../data/useAuth.js";
+import { stationName as stationNameFor } from "../../data/clinic-projections.js";
+import { useConfig } from "../../data/useConfig.js";
 import { journeySteps } from "../../data/journey-steps.js";
 import {
   formatDuration,
@@ -61,10 +57,14 @@ export function StationWorkspace({
   store: injected,
 }: StationWorkspaceProps) {
   const clinic = useClinic(injected);
+  const config = useConfig();
+  const auth = useAuth();
+  const actor = (auth.currentUser()?.id ?? "") as UserId;
+  const workflow = config.defaultWorkflow();
   const now = useNow(1000);
   const version = clinic.getVersion();
   const { announce } = useAnnouncer();
-  const profile = profileFor(stationId);
+  const profile = profileFor(config.station(stationId)?.code ?? "");
 
   const worklist = useMemo(
     () => clinic.worklist(stationId),
@@ -79,57 +79,52 @@ export function StationWorkspace({
   const currentVisit = current ? clinic.find(current.visitId) : undefined;
 
   const run = useCallback(
-    (result: ActionResult, success: string) => {
+    async (pending: Promise<ActionResult>, success: string) => {
+      const result = await pending;
       announce(result.ok ? success : result.message, result.ok ? "success" : "error");
     },
     [announce],
   );
 
   const callNext = useCallback(() => {
-    const worklistNow = clinic.worklist(stationId);
-    const [next] = worklistNow.waiting;
-    const result = clinic.callNext(stationId, CURRENT_USER);
-    run(result, next ? `Called ${next.patientName}.` : "Called next patient.");
-  }, [clinic, stationId, run]);
+    const [next] = clinic.worklist(stationId).waiting;
+    void run(
+      clinic.callNext(stationId, actor),
+      next ? `Called ${next.patientName}.` : "Called next patient.",
+    );
+  }, [actor, clinic, stationId, run]);
 
   const startService = useCallback(() => {
     if (!current) return;
-    run(
-      clinic.startService(current.visitId, CURRENT_USER),
+    void run(
+      clinic.startService(current.visitId, actor),
       `Started with ${current.patientName}.`,
     );
   }, [clinic, current, run]);
 
   const recall = useCallback(() => {
     if (!current) return;
-    run(
-      clinic.recall(current.visitId, CURRENT_USER),
+    void run(
+      clinic.recall(current.visitId, actor),
       `Recalled ${current.patientName}.`,
     );
   }, [clinic, current, run]);
 
   const skip = useCallback(() => {
     if (!current) return;
-    run(
-      clinic.skip(current.visitId, "Not present", CURRENT_USER),
+    void run(
+      clinic.skip(current.visitId, "Not present", actor),
       `${current.patientName} skipped — they keep their place in the queue.`,
-    );
-  }, [clinic, current, run]);
-
-  const escalate = useCallback(() => {
-    if (!current) return;
-    run(
-      clinic.escalate(current.visitId, "emergency", "Escalated at station", CURRENT_USER),
-      `${current.patientName} escalated to Emergency.`,
     );
   }, [clinic, current, run]);
 
   const routeTo = useCallback(
     (to: StationId | undefined) => {
       if (!current) return;
-      const label = to ? stationNameFor(to) : "the next stage";
-      run(
-        clinic.route(current.visitId, to, CURRENT_USER),
+      if (to === undefined) return;
+      const label = stationNameFor(config.config, to);
+      void run(
+        clinic.route(current.visitId, to, actor),
         `${current.patientName} sent to ${label}.`,
       );
     },
@@ -138,8 +133,8 @@ export function StationWorkspace({
 
   const complete = useCallback(() => {
     if (!current) return;
-    run(
-      clinic.complete(current.visitId, CURRENT_USER),
+    void run(
+      clinic.complete(current.visitId, actor),
       `${current.patientName}'s visit is complete.`,
     );
   }, [clinic, current, run]);
@@ -167,7 +162,6 @@ export function StationWorkspace({
         r: recall,
         k: skip,
         c: complete,
-        e: escalate,
       };
       const action = actions[event.key.toLowerCase()];
       if (action) {
@@ -178,9 +172,9 @@ export function StationWorkspace({
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [callNext, startService, recall, skip, complete, escalate]);
+  }, [callNext, startService, recall, skip, complete]);
 
-  const name = stationNameFor(stationId);
+  const name = stationNameFor(config.config, stationId);
 
   return (
     <div className="space-y-6">
@@ -291,12 +285,6 @@ export function StationWorkspace({
                     label="Skip"
                     onClick={skip}
                   />
-                  <ActionButton
-                    icon={<TriangleAlert className="size-5" />}
-                    label="Escalate"
-                    tone="danger"
-                    onClick={escalate}
-                  />
                 </div>
 
                 {/* Destinations come from the workflow, never from a hardcoded
@@ -313,7 +301,7 @@ export function StationWorkspace({
                         icon={<ArrowRight className="size-4" />}
                         onClick={() => routeTo(option.stationId)}
                       >
-                        {stationNameFor(option.stationId) ?? "Next station"}
+                        {stationNameFor(config.config, option.stationId) ?? "Next station"}
                       </Button>
                     ))}
                     {destinations.options.length === 0 && (
@@ -340,9 +328,11 @@ export function StationWorkspace({
                 subtitle="Where this visit has been, and what remains."
               />
               <div className="px-gutter pb-gutter">
-                <JourneyTimeline
-                  steps={journeySteps(currentVisit.visit, currentWorkflow())}
-                />
+                {workflow && (
+                  <JourneyTimeline
+                    steps={journeySteps(currentVisit, workflow, config.config)}
+                  />
+                )}
               </div>
               {/* QMan does not own medical records — the PRD is explicit that
                   clinical data stays in the HMS. The workspace leaves a slot for

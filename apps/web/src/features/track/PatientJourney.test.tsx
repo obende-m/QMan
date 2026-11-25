@@ -1,31 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { PatientJourney } from "./PatientJourney.js";
-import { CURRENT_USER, ClinicStore } from "../../data/clinic-store.js";
-import { STATIONS } from "../../data/demo-clinic.js";
-import type { DemoVisit } from "../../data/demo-clinic.js";
+import type { Visit } from "@qman/domain";
+import type { ClinicStore } from "../../data/clinic-store.js";
+import {
+  createFixture,
+  STATION_IDS as STATIONS,
+  USER_ID,
+  type Fixture,
+} from "../../test/api-fixture.js";
 
 describe("Patient Journey Tracking", () => {
+  let fixture: Fixture;
   let store: ClinicStore;
-  let waiting: DemoVisit;
+  let waiting: Visit;
 
-  beforeEach(() => {
-    store = new ClinicStore();
+  beforeEach(async () => {
+    fixture = await createFixture();
+    store = fixture.clinic;
     // A patient who is queued and not yet called — the common case.
-    waiting = store.visits.find(({ visit }) => visit.status === "queued")!;
+    waiting = store.visits.find((visit) => visit.status === "queued")!;
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    fixture.restore();
+    cleanup();
+  });
 
-  it("asks for a journey code and needs no account", () => {
+  it("asks for a journey code and needs no account", async () => {
     render(<PatientJourney store={store} />);
     expect(screen.getByLabelText(/journey code/i)).toBeDefined();
     expect(screen.getByText(/no account needed/i)).toBeDefined();
   });
 
-  it("finds a visit from a code typed however the patient managed it", () => {
+  it("finds a visit from a code typed however the patient managed it", async () => {
     render(<PatientJourney store={store} />);
-    const code = waiting.visit.journeyCode;
+    const code = waiting.journeyCode;
 
     fireEvent.change(screen.getByLabelText(/journey code/i), {
       // Lower case, no prefix, stray spaces — all should resolve.
@@ -33,10 +43,10 @@ describe("Patient Journey Tracking", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: /track my visit/i }));
 
-    expect(screen.getByText(waiting.visit.patient.name)).toBeDefined();
+    expect(screen.getByText(waiting.patient.name)).toBeDefined();
   });
 
-  it("explains itself when the code is wrong instead of failing silently", () => {
+  it("explains itself when the code is wrong instead of failing silently", async () => {
     render(<PatientJourney store={store} />);
     fireEvent.change(screen.getByLabelText(/journey code/i), {
       target: { value: "QM-ZZZZ" },
@@ -48,26 +58,26 @@ describe("Patient Journey Tracking", () => {
     expect(error.textContent).toMatch(/ask at reception/i);
   });
 
-  it("opens straight onto the journey when arrived at by QR", () => {
+  it("opens straight onto the journey when arrived at by QR", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
-    expect(screen.getByText(waiting.visit.patient.name)).toBeDefined();
+    expect(screen.getByText(waiting.patient.name)).toBeDefined();
     expect(screen.queryByLabelText(/journey code/i)).toBeNull();
   });
 
-  it("shows position, people ahead, estimated wait, ticket and room", () => {
+  it("shows position, people ahead, estimated wait, ticket and room", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
 
-    const position = store.positionOf(waiting.visit.id)!;
-    const ahead = store.aheadOf(waiting.visit.id)!;
+    const position = store.positionOf(waiting.id)!;
+    const ahead = store.aheadOf(waiting.id)!;
 
     expect(screen.getByText(`#${position}`)).toBeDefined();
     expect(screen.getByText(/estimated wait/i)).toBeDefined();
     expect(
-      screen.getByText(waiting.visit.currentEntry!.queueLabel),
+      screen.getByText(waiting.currentEntry!.queueLabel),
     ).toBeDefined();
     expect(screen.getByText(/go to/i)).toBeDefined();
 
@@ -84,59 +94,59 @@ describe("Patient Journey Tracking", () => {
    * The clarification that drove this screen: the ticket is fixed for the stop,
    * the position moves as the queue does.
    */
-  it("keeps the ticket fixed while the position counts down", () => {
+  it("keeps the ticket fixed while the position counts down", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
 
-    const stationId = waiting.visit.currentStationId!;
-    const ticket = waiting.visit.currentEntry!.queueLabel;
-    const positionBefore = store.positionOf(waiting.visit.id)!;
+    const stationId = waiting.currentStationId!;
+    const ticket = waiting.currentEntry!.queueLabel;
+    const positionBefore = store.positionOf(waiting.id)!;
 
     // Clear the patient ahead of them so the queue advances.
-    act(() => {
+    await act(async () => {
       const current = store.worklist(stationId).current;
-      if (current) store.complete(current.visitId, CURRENT_USER);
+      if (current) await store.complete(current.visitId, USER_ID);
       const next = store.worklist(stationId).waiting[0];
-      if (next && next.visitId !== waiting.visit.id) {
-        store.callNext(stationId, CURRENT_USER);
-        store.complete(next.visitId, CURRENT_USER);
+      if (next && next.visitId !== waiting.id) {
+        await store.callNext(stationId, USER_ID);
+        await store.complete(next.visitId, USER_ID);
       }
     });
 
-    const positionAfter = store.positionOf(waiting.visit.id);
+    const positionAfter = store.positionOf(waiting.id);
     if (positionAfter !== null && positionBefore > 1) {
       expect(positionAfter).toBeLessThan(positionBefore);
     }
     // The ticket did not change with it.
-    expect(waiting.visit.currentEntry!.queueLabel).toBe(ticket);
+    expect(waiting.currentEntry!.queueLabel).toBe(ticket);
   });
 
-  it("tells the patient plainly when it is their turn", () => {
-    const stationId = waiting.visit.currentStationId!;
+  it("tells the patient plainly when it is their turn", async () => {
+    const stationId = waiting.currentStationId!;
     // Clear the station, then call this patient up.
     const current = store.worklist(stationId).current;
-    if (current) store.complete(current.visitId, CURRENT_USER);
-    store.recall(waiting.visit.id, CURRENT_USER);
+    if (current) await store.complete(current.visitId, USER_ID);
+    await store.recall(waiting.id, USER_ID);
 
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
 
     expect(screen.getByText(/it's your turn/i)).toBeDefined();
     expect(screen.getByText(/please go to/i)).toBeDefined();
   });
 
-  it("closes the loop when the visit is complete", () => {
-    const done = store.visits.find(({ visit }) => visit.status === "completed")!;
-    render(<PatientJourney store={store} initialCode={done.visit.journeyCode} />);
+  it("closes the loop when the visit is complete", async () => {
+    const done = store.visits.find((visit) => visit.status === "completed")!;
+    render(<PatientJourney store={store} initialCode={done.journeyCode} />);
     expect(screen.getByText(/your visit is complete/i)).toBeDefined();
     expect(screen.getByText(/you may now leave/i)).toBeDefined();
   });
 
-  it("shows the journey timeline, including what is still ahead", () => {
+  it("shows the journey timeline, including what is still ahead", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
     const section = screen
       .getByRole("heading", { name: /your journey/i })
@@ -150,9 +160,9 @@ describe("Patient Journey Tracking", () => {
    * to stay in their seat on the strength of "#2, ~15 mins". A page that has
    * stopped updating must not present them as current.
    */
-  it("says it is live while the source keeps reporting", () => {
+  it("says it is live while the source keeps reporting", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
     expect(screen.getByText("Live")).toBeDefined();
     expect(screen.queryByText(/may be out of date/i)).toBeNull();
@@ -162,7 +172,7 @@ describe("Patient Journey Tracking", () => {
     vi.useFakeTimers();
     try {
       render(
-        <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+        <PatientJourney store={store} initialCode={waiting.journeyCode} />,
       );
 
       await act(async () => {
@@ -183,14 +193,14 @@ describe("Patient Journey Tracking", () => {
     vi.useFakeTimers();
     try {
       render(
-        <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+        <PatientJourney store={store} initialCode={waiting.journeyCode} />,
       );
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
 
       // Something labelled as possibly out of date beats a blank screen.
-      expect(screen.getByText(waiting.visit.journeyCode)).toBeDefined();
+      expect(screen.getByText(waiting.journeyCode)).toBeDefined();
       expect(screen.getByLabelText(/your position/i)).toBeDefined();
     } finally {
       vi.useRealTimers();
@@ -201,7 +211,7 @@ describe("Patient Journey Tracking", () => {
     vi.useFakeTimers();
     try {
       render(
-        <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+        <PatientJourney store={store} initialCode={waiting.journeyCode} />,
       );
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
@@ -220,16 +230,16 @@ describe("Patient Journey Tracking", () => {
     }
   });
 
-  it("updates live as the clinic moves", () => {
+  it("updates live as the clinic moves", async () => {
     render(
-      <PatientJourney store={store} initialCode={waiting.visit.journeyCode} />,
+      <PatientJourney store={store} initialCode={waiting.journeyCode} />,
     );
-    const stationId = waiting.visit.currentStationId!;
+    const stationId = waiting.currentStationId!;
 
-    act(() => {
+    await act(async () => {
       const current = store.worklist(stationId).current;
-      if (current) store.complete(current.visitId, CURRENT_USER);
-      store.recall(waiting.visit.id, CURRENT_USER);
+      if (current) await store.complete(current.visitId, USER_ID);
+      await store.recall(waiting.id, USER_ID);
     });
 
     expect(screen.getByText(/it's your turn/i)).toBeDefined();

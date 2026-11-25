@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CircleCheck, TriangleAlert } from "lucide-react";
 import type { ConfigProblem } from "@qman/domain";
 import { cn } from "../../components/ui/cn.js";
@@ -7,19 +7,29 @@ import type { SaveResult } from "../../data/config-store.js";
 /**
  * Save feedback for the administration portal.
  *
- * Configuration edits save as you type rather than behind a Save button, so the
- * portal has to be explicit about what happened — a silent refusal would look
- * identical to a successful save.
+ * Configuration edits commit when a field is finished with rather than behind a
+ * global Save button, so the portal has to be explicit about what happened — a
+ * silent refusal would look identical to a successful save.
  */
 export interface Feedback {
-  tone: "saved" | "warning" | "error";
+  tone: "saving" | "saved" | "warning" | "error";
   messages: string[];
 }
 
 export function useSaveFeedback() {
   const [feedback, setFeedback] = useState<Feedback | null>(null);
 
-  const report = useCallback((result: SaveResult) => {
+  /**
+   * Takes the promise a save now returns.
+   *
+   * Saving reaches the server, so the outcome arrives later than the keystroke
+   * that caused it. Reporting on the promise keeps every call site a single
+   * expression, and keeps "saving" from being a state each section tracks for
+   * itself.
+   */
+  const report = useCallback(async (pending: Promise<SaveResult> | SaveResult) => {
+    setFeedback({ tone: "saving", messages: [] });
+    const result = await pending;
     if (!result.ok) {
       setFeedback({
         tone: "error",
@@ -41,8 +51,70 @@ export function useSaveFeedback() {
   return { feedback, report };
 }
 
+/**
+ * An input that commits when the edit is finished, not on every keystroke.
+ *
+ * The portal used to save on `onChange`, which was free when the configuration
+ * lived in memory. Against the API it is one PATCH and one audit entry per
+ * character typed — a hospital renamed from "Ikeja" to "Ikeja General" writes
+ * eight rows into the audit trail, seven of them describing names that never
+ * existed. The trail is meant to answer "who changed this and to what", and
+ * that noise is how it stops being readable.
+ *
+ * Committing on blur rather than behind a Save button keeps the existing feel
+ * of the portal: a field is edited and it is saved, with no extra step.
+ * Enter commits too, because a keyboard user should not have to leave the field
+ * to find out whether it was accepted.
+ */
+export function DraftInput({
+  value,
+  onCommit,
+  className,
+  ...rest
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange">) {
+  const [draft, setDraft] = useState(value);
+
+  // Follows the store when the value changes underneath — another
+  // administrator's edit, or the server normalising what was just sent.
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = (): void => {
+    if (draft !== value) onCommit(draft);
+  };
+
+  return (
+    <input
+      {...rest}
+      className={className}
+      value={draft}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={commit}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          commit();
+        }
+        if (event.key === "Escape") setDraft(value);
+      }}
+    />
+  );
+}
+
 export function SaveFeedback({ feedback }: { feedback: Feedback | null }) {
   if (!feedback) return null;
+
+  if (feedback.tone === "saving") {
+    return (
+      <p role="status" className="text-body-sm text-on-surface-variant">
+        Saving…
+      </p>
+    );
+  }
 
   if (feedback.tone === "saved") {
     return (

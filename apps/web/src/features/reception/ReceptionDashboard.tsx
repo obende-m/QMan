@@ -21,25 +21,21 @@ import {
   priorityChip,
   visitStatusChip,
 } from "../../components/ui/StatusChip.js";
-import {
-  STATIONS,
-  receptionStations,
-  saturationFor,
-  stationName,
-  stationRoom,
-} from "../../data/demo-clinic.js";
-import { configStore } from "../../data/config-store.js";
+import { slaFor, stationName, stationRoom } from "../../data/clinic-projections.js";
+import { useConfig } from "../../data/useConfig.js";
 import { TicketPrintDialog } from "../printing/TicketPrintDialog.js";
 import { useClinic, useNow } from "../../data/useClinic.js";
+import type { StationConfig, StationWorklist } from "@qman/domain";
 import type { ClinicStore } from "../../data/clinic-store.js";
 import { PriorityPatients } from "./PriorityPatients.js";
 
+/** Keyed on the station code, which is what an administrator configures. */
 const STATION_ICONS: Record<string, JSX.Element> = {
-  [STATIONS.vitals]: <Activity className="size-4" />,
-  [STATIONS.consultation]: <Stethoscope className="size-4" />,
-  [STATIONS.laboratory]: <FlaskConical className="size-4" />,
-  [STATIONS.pharmacy]: <Pill className="size-4" />,
-  [STATIONS.reception]: <UserPlus className="size-4" />,
+  VIT: <Activity className="size-4" />,
+  OPD: <Stethoscope className="size-4" />,
+  LAB: <FlaskConical className="size-4" />,
+  PHR: <Pill className="size-4" />,
+  REC: <UserPlus className="size-4" />,
 };
 
 export interface ReceptionDashboardProps {
@@ -53,19 +49,23 @@ export function ReceptionDashboard({
   onOpenVisit,
 }: ReceptionDashboardProps = {}) {
   const clinic = useClinic(injected);
+  const config = useConfig();
   const now = useNow(30_000);
   const version = clinic.getVersion();
   const [printing, setPrinting] = useState<string | null>(null);
   const printingVisit = printing
-    ? clinic.visits.find(({ visit }) => visit.id === printing)
+    ? clinic.visits.find((visit) => visit.id === printing)
     : undefined;
 
   const stations = useMemo(
     () =>
-      receptionStations().map((stationId: StationId) => ({
-        stationId,
-        worklist: clinic.worklist(stationId),
-      })),
+      config
+        .publicStations()
+        .slice(0, 3)
+        .map((station) => ({
+          station,
+          worklist: clinic.worklist(station.id),
+        })),
     [clinic, version],
   );
 
@@ -80,7 +80,7 @@ export function ReceptionDashboard({
    * derivable from the same stream the audit trail reads.
    */
   const metrics = useMemo(() => {
-    const waits = clinic.visits.flatMap(({ visit }) =>
+    const waits = clinic.visits.flatMap((visit) =>
       visit.queueEntries
         .filter((entry) => entry.startedAt !== null)
         .map(
@@ -104,7 +104,7 @@ export function ReceptionDashboard({
   const recent = useMemo(
     () =>
       [...clinic.visits]
-        .sort((a, b) => b.arrivedAt.getTime() - a.arrivedAt.getTime())
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
         .slice(0, 6),
     [clinic, version],
   );
@@ -152,14 +152,14 @@ export function ReceptionDashboard({
             }
           />
           <div className="grid gap-4 px-gutter pb-gutter sm:grid-cols-2 xl:grid-cols-3">
-            {stations.map(({ stationId, worklist }) => (
+            {stations.map(({ station, worklist }: { station: StationConfig; worklist: StationWorklist }) => (
               <StationLoadCard
-                key={stationId}
-                name={stationName(stationId)}
+                key={station.id}
+                name={station.name}
                 waiting={worklist.counts.waiting}
-                saturationPoint={saturationFor(stationId)}
-                icon={STATION_ICONS[stationId]}
-                selected={stationId === STATIONS.consultation}
+                saturationPoint={station.sla.saturationPoint}
+                icon={STATION_ICONS[station.code.toUpperCase()]}
+                selected={false}
               />
             ))}
           </div>
@@ -208,7 +208,7 @@ export function ReceptionDashboard({
               </tr>
             </thead>
             <tbody>
-              {recent.map(({ visit, arrivedAt }) => {
+              {recent.map((visit) => {
                 const status = visitStatusChip(visit.status);
                 const priority = priorityChip(visit.priority);
                 const stationId = visit.currentStationId;
@@ -234,7 +234,7 @@ export function ReceptionDashboard({
                       </span>
                     </td>
                     <td className="whitespace-nowrap px-gutter py-4 text-body-sm text-on-surface-variant">
-                      {arrivedAt.toLocaleTimeString([], {
+                      {visit.createdAt.toLocaleTimeString([], {
                         hour: "2-digit",
                         minute: "2-digit",
                       })}
@@ -249,7 +249,7 @@ export function ReceptionDashboard({
                             <span aria-hidden="true">
                               {STATION_ICONS[stationId]}
                             </span>
-                            {stationName(stationId)}
+                            {stationName(config.config, stationId)}
                           </>
                         ) : (
                           "Discharged"
@@ -275,26 +275,26 @@ export function ReceptionDashboard({
         </div>
       </Card>
 
-      {printingVisit && (
+      {printingVisit && config.ticketTemplate() && (
         <TicketPrintDialog
-          template={configStore.ticketTemplate()}
+          template={config.ticketTemplate()!}
           context={{
             ticket:
-              printingVisit.visit.currentEntry?.queueLabel ??
-              printingVisit.visit.journeyCode,
-            journeyCode: printingVisit.visit.journeyCode,
-            patientName: printingVisit.visit.patient.name,
-            hospitalName: configStore.config.profile.name,
-            branchName: configStore.config.branches[0]?.name ?? "",
-            stationName: printingVisit.visit.currentStationId
-              ? stationName(printingVisit.visit.currentStationId)
+              printingVisit.currentEntry?.queueLabel ??
+              printingVisit.journeyCode,
+            journeyCode: printingVisit.journeyCode,
+            patientName: printingVisit.patient.name,
+            hospitalName: config.config.profile.name,
+            branchName: config.config.branches[0]?.name ?? "",
+            stationName: printingVisit.currentStationId
+              ? stationName(config.config, printingVisit.currentStationId)
               : "Reception",
-            room: printingVisit.visit.currentStationId
-              ? stationRoom(printingVisit.visit.currentStationId)
+            room: printingVisit.currentStationId
+              ? stationRoom(config.config, printingVisit.currentStationId)
               : null,
             assignedTo: null,
-            branchCount: configStore.config.branches.length,
-            issuedAt: printingVisit.arrivedAt,
+            branchCount: config.config.branches.length,
+            issuedAt: printingVisit.createdAt,
             logoUrl: null,
           }}
           onClose={() => setPrinting(null)}

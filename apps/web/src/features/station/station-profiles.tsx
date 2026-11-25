@@ -1,7 +1,5 @@
 import { Activity, FlaskConical, Pill, Stethoscope, Scan } from "lucide-react";
 import type { ReactNode } from "react";
-import type { StationId } from "@qman/domain";
-import { STATIONS } from "../../data/demo-clinic.js";
 
 /**
  * A Station Profile is the only thing that differs between the Consultation,
@@ -35,33 +33,34 @@ const GENERIC: StationProfile = {
 };
 
 const PROFILES: Record<string, StationProfile> = {
-  [STATIONS.consultation]: {
+    OPD: {
     activeLabel: "Now serving",
     timerLabel: "Time in consult",
     startLabel: "Start consult",
     icon: <Stethoscope className="size-4" />,
   },
-  [STATIONS.vitals]: {
+    VIT: {
     activeLabel: "Now assessing",
     timerLabel: "Time in triage",
     startLabel: "Start assessment",
     icon: <Activity className="size-4" />,
   },
-  [STATIONS.laboratory]: {
+    LAB: {
     activeLabel: "Now collecting",
     timerLabel: "Time at collection",
     startLabel: "Start collection",
     icon: <FlaskConical className="size-4" />,
   },
-  [STATIONS.pharmacy]: {
+    PHR: {
     activeLabel: "Now dispensing",
     timerLabel: "Time at counter",
     startLabel: "Start dispensing",
     icon: <Pill className="size-4" />,
   },
-  // Radiology has no station seeded in the demo clinic yet; the profile is here
-  // to show that vocabulary is pure configuration.
-  "st-radiology": {
+  // Keyed by code like every other entry. This was "st-radiology" — an
+  // identifier from the demo clinic that no longer exists — which `profileFor`
+  // could never match, since it uppercases the code it is given.
+  RAD: {
     activeLabel: "Now imaging",
     timerLabel: "Time in imaging",
     startLabel: "Start imaging",
@@ -69,6 +68,14 @@ const PROFILES: Record<string, StationProfile> = {
   },
 };
 
-export function profileFor(stationId: StationId): StationProfile {
-  return PROFILES[stationId] ?? GENERIC;
+/**
+ * Keyed on the station's code rather than its identifier.
+ *
+ * Identifiers are the server's and differ per hospital; the code is what an
+ * administrator types and what the queue-number template already uses. A
+ * hospital with a code this does not recognise gets the generic profile, which
+ * is the correct outcome rather than a missing screen.
+ */
+export function profileFor(code: string): StationProfile {
+  return PROFILES[code.toUpperCase()] ?? GENERIC;
 }

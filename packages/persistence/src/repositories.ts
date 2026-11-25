@@ -41,16 +41,34 @@ import { WhereBuilder, type Database, type SqlExecutor } from "./sql.js";
  * that implements the same shapes.
  */
 
+/**
+ * Reads visits.
+ *
+ * **Every lookup takes the tenant, and it is the first argument.**
+ *
+ * Not a convention — a signature. A visit, a branch and a station are all
+ * tenant-owned, and their identifiers are UUIDs that arrive from the client in
+ * a URL. A method that accepted only the identifier could be called with
+ * another organization's id and would answer, which is exactly the leak found
+ * in the release audit: `GET /branches/:branchId/visits` returned whatever
+ * branch it was handed.
+ *
+ * Making the tenant a required parameter moves that from something a route
+ * author must remember to something the compiler refuses to let them omit, and
+ * the filter lives in the SQL where it cannot be skipped by a caller at all.
+ * `hospitalId` rather than `branchId` because a hospital may have many branches
+ * and a user may work across them; the branch is a narrowing, not the boundary.
+ */
 export interface VisitRepository {
-  find(id: VisitId): Promise<Visit | null>;
+  find(hospitalId: string, id: VisitId): Promise<Visit | null>;
   findByJourneyCode(
     branchId: BranchId,
     code: JourneyCode,
   ): Promise<Visit | null>;
   /** Every visit with an open queue entry at a station. Drives worklists. */
-  openAtStation(stationId: StationId): Promise<Visit[]>;
+  openAtStation(hospitalId: string, stationId: StationId): Promise<Visit[]>;
   /** Active visits for a branch, for dashboards and the reception list. */
-  activeInBranch(branchId: BranchId): Promise<Visit[]>;
+  activeInBranch(hospitalId: string, branchId: BranchId): Promise<Visit[]>;
   /** Resolves the token printed into a ticket's QR code. Open visits only. */
   findByTrackingToken(tokenHash: string): Promise<Visit | null>;
   /** Persists the visit and its queue entries, and appends its events. */
@@ -64,10 +82,23 @@ export interface VisitRepository {
 
 export type NewEvent = Omit<EventRecord, "id" | "sequence" | "recordedAt">;
 
+/**
+ * Reads the business event log.
+ *
+ * Tenant-scoped for the same reason `VisitRepository` is, and more urgently:
+ * an event's `summary` is rendered prose containing Journey Codes and, for
+ * administrative records, what was changed. An unscoped query returned every
+ * organization's history — the release audit found `GET /api/v1/events` doing
+ * exactly that whenever no branch filter was supplied.
+ *
+ * The hospital is a separate required parameter rather than a field on
+ * `EventQuery`, because a field is optional-looking and a caller who omitted it
+ * would get everything. A parameter cannot be omitted.
+ */
 export interface EventRepository {
   append(events: readonly NewEvent[]): Promise<void>;
-  query(query: EventQuery): Promise<EventRecord[]>;
-  forVisit(visitId: VisitId): Promise<EventRecord[]>;
+  query(hospitalId: string, query: EventQuery): Promise<EventRecord[]>;
+  forVisit(hospitalId: string, visitId: VisitId): Promise<EventRecord[]>;
 }
 
 export interface SessionRepository {
@@ -132,10 +163,21 @@ export class PostgresVisitRepository implements VisitRepository {
     private readonly deps: VisitDependencies,
   ) {}
 
-  async find(id: VisitId): Promise<Visit | null> {
+  /**
+   * The tenant is joined through, not trusted from the caller.
+   *
+   * `visits` carries a branch, and a branch carries a hospital, so ownership is
+   * one join away and is applied inside the query. A visit belonging to another
+   * organization returns no row — indistinguishable from one that does not
+   * exist, which is what a caller probing identifiers should see.
+   */
+  async find(hospitalId: string, id: VisitId): Promise<Visit | null> {
     const [row] = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS} FROM visits WHERE id = $1`,
-      [id],
+      `SELECT ${VISIT_COLUMNS.split(",").map((c) => `v.${c.trim()}`).join(", ")}
+       FROM visits v
+       JOIN branches b ON b.id = v.branch_id
+       WHERE v.id = $1 AND b.hospital_id = $2`,
+      [id, hospitalId],
     );
     if (!row) return null;
     return this.#hydrate([row]).then((visits) => visits[0] ?? null);
@@ -154,26 +196,30 @@ export class PostgresVisitRepository implements VisitRepository {
     return this.#hydrate([row]).then((visits) => visits[0] ?? null);
   }
 
-  async openAtStation(stationId: StationId): Promise<Visit[]> {
+  async openAtStation(hospitalId: string, stationId: StationId): Promise<Visit[]> {
     const rows = await this.db.query<VisitRow>(
       `SELECT DISTINCT ${VISIT_COLUMNS.split(",")
         .map((c) => `v.${c.trim()}`)
         .join(", ")}
        FROM visits v
        JOIN queue_entries q ON q.visit_id = v.id
+       JOIN branches b ON b.id = v.branch_id
        WHERE q.station_id = $1
+         AND b.hospital_id = $2
          AND q.status IN ('waiting', 'called', 'in_progress')`,
-      [stationId],
+      [stationId, hospitalId],
     );
     return this.#hydrate(rows);
   }
 
-  async activeInBranch(branchId: BranchId): Promise<Visit[]> {
+  async activeInBranch(hospitalId: string, branchId: BranchId): Promise<Visit[]> {
     const rows = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS} FROM visits
-       WHERE branch_id = $1 AND closed_at IS NULL
-       ORDER BY created_at DESC`,
-      [branchId],
+      `SELECT ${VISIT_COLUMNS.split(",").map((c) => `v.${c.trim()}`).join(", ")}
+       FROM visits v
+       JOIN branches b ON b.id = v.branch_id
+       WHERE v.branch_id = $1 AND b.hospital_id = $2 AND v.closed_at IS NULL
+       ORDER BY v.created_at DESC`,
+      [branchId, hospitalId],
     );
     return this.#hydrate(rows);
   }
@@ -365,8 +411,11 @@ export class PostgresEventRepository implements EventRepository {
    * Filters mirror `matchesQuery` in the domain exactly, so the in-memory and
    * SQL paths cannot drift into answering the same question differently.
    */
-  async query(query: EventQuery): Promise<EventRecord[]> {
+  async query(hospitalId: string, query: EventQuery): Promise<EventRecord[]> {
     const where = new WhereBuilder();
+
+    // First, and unconditional. Every other clause narrows within it.
+    where.add((p) => `hospital_id = ${p}`, hospitalId);
 
     if (query.categories?.length) {
       where.add((p) => `category = ANY(${p})`, query.categories);
@@ -414,11 +463,11 @@ export class PostgresEventRepository implements EventRepository {
     return rows.map(toEventRecord);
   }
 
-  async forVisit(visitId: VisitId): Promise<EventRecord[]> {
+  async forVisit(hospitalId: string, visitId: VisitId): Promise<EventRecord[]> {
     const rows = await this.db.query<EventRow>(
       `SELECT ${EVENT_COLUMNS} FROM events
-       WHERE visit_id = $1 ORDER BY sequence ASC`,
-      [visitId],
+       WHERE visit_id = $1 AND hospital_id = $2 ORDER BY sequence ASC`,
+      [visitId, hospitalId],
     );
     return rows.map(toEventRecord);
   }

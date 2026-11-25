@@ -301,9 +301,15 @@ export { GENERIC_AUTH_FAILURE };
  * A real digest of a value nobody knows, used only to spend the same time on a
  * missing account as on a wrong password. Never matches: the salt is fixed and
  * the plaintext behind it was discarded.
+ *
+ * It must be a *parseable* digest. A string of the right length that scrypt
+ * cannot parse is rejected before any key derivation happens, which spends no
+ * time at all and reintroduces exactly the timing difference this exists to
+ * remove. Exported so the platform sign-in path uses this one rather than
+ * inventing a second that might not have that property.
  */
-const DUMMY_HASH =
+export const DUMMY_HASH =
   "scrypt$16384$8$1$" +
   "0e1cbb62c1c05ac2b0b4fb7b57f9fa4dfe6da3ba39f10b6b0a3e2a08d1c8e3f2" +
   "5b41f2f37a0b7f1f1f0a5e8c3d2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09";
-const DUMMY_SALT = "9f8e7d6c5b4a39281706f5e4d3c2b1a0";
+export const DUMMY_SALT = "9f8e7d6c5b4a39281706f5e4d3c2b1a0";

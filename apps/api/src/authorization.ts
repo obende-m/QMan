@@ -41,7 +41,27 @@ export function readSessionToken(request: FastifyRequest): string | null {
 export interface GuardDependencies {
   readonly auth: AuthService;
   readonly logger: Logger;
-  readonly resolveHospital: (request: FastifyRequest) => string;
+}
+
+/**
+ * The tenant this request acts within.
+ *
+ * Read from the authenticated session and from nowhere else. No route takes a
+ * hospital id as a path parameter, a query parameter or a body field, so a
+ * client has no way to name a tenant at all — reaching another organization's
+ * data is not refused, it is unrepresentable.
+ *
+ * Throws rather than returning null. Every caller runs after a guard that has
+ * already authenticated; reaching here without a session is a programming
+ * error, and returning a nullable would invite a caller to handle it by
+ * defaulting to something.
+ */
+export function tenantOf(request: FastifyRequest): string {
+  const authenticated = request.authenticated;
+  if (authenticated === undefined) {
+    throw new Error("tenantOf called on an unauthenticated request.");
+  }
+  return authenticated.hospitalId;
 }
 
 /**
@@ -72,38 +92,70 @@ export async function authenticate(
 }
 
 /**
+ * Refuses a request whose target belongs to another organization.
+ *
+ * This is the defence-in-depth control described in ADR/PLATFORM-TENANCY §6.2,
+ * and it is permanent. Tenancy is derived from the session (`tenantOf`), so in
+ * a correct system this comparison always passes — which is exactly why it is
+ * worth making. The two quantities have different provenance: the session's
+ * hospital comes from the `users` row, and the owner's comes from the resource
+ * that was actually loaded. They can only disagree if a repository returned a
+ * row it should not have.
+ *
+ * That is the failure it catches: a query written without its
+ * `WHERE hospital_id = $1`, or a lookup by an id that turned out to belong to
+ * someone else. Without this, such a bug serves another hospital's data with a
+ * 200; with it, the request fails closed and the log carries an alarm.
+ *
+ * `null` means the resource was not found. That is refused too, and with the
+ * same message: telling an unauthorised caller apart from an unlucky one tells
+ * them whether the id they guessed exists.
+ */
+export function ownedByTenant(
+  deps: GuardDependencies,
+  request: FastifyRequest,
+  reply: FastifyReply,
+  ownerHospitalId: string | null,
+  resource: string,
+): boolean {
+  const authenticated = request.authenticated!;
+
+  if (ownerHospitalId === null || ownerHospitalId !== authenticated.hospitalId) {
+    deps.logger.error("cross-tenant request refused", {
+      requestId: request.requestId,
+      path: request.url,
+      userId: authenticated.user.account.id,
+      resource,
+      hospitalId: authenticated.hospitalId,
+      ownerHospitalId,
+    });
+    void reply.status(404).send({ error: `No such ${resource}.` });
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * A preHandler enforcing one permission.
  *
- * The tenant check is not a formality. A session is bound to a user, and a user
- * to a hospital; a request whose resolved hospital differs from the account's
- * is either a misconfiguration or an attempt to reach another hospital's data
- * with a valid session. Both are refused, and the second is worth an alarm in
- * the log rather than a quiet 403.
+ * The tenant is not checked here any more, because there is nothing to check it
+ * against: it comes from the session and the session is the only source. What
+ * replaces that check is `ownedByTenant`, applied where a resource is loaded —
+ * see §6.2. Moving it there is not a relaxation; it is pointing the same
+ * refusal at a comparison that can still fail.
  */
 export function requirePermission(deps: GuardDependencies, permission: Permission) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (!(await authenticate(deps, request, reply))) return;
 
     const authenticated = request.authenticated!;
-    const hospitalId = deps.resolveHospital(request);
-
-    if (authenticated.hospitalId !== hospitalId) {
-      deps.logger.error("cross-tenant request refused", {
-        requestId: request.requestId,
-        path: request.url,
-        userId: authenticated.user.account.id,
-        hospitalId,
-        accountHospitalId: authenticated.hospitalId,
-      });
-      void reply.status(403).send({ error: "You do not have access to this hospital." });
-      return;
-    }
 
     if (!authenticated.user.permissions.includes(permission)) {
       deps.logger.warn("permission refused", {
         requestId: request.requestId,
         path: request.url,
-        hospitalId,
+        hospitalId: authenticated.hospitalId,
         userId: authenticated.user.account.id,
         permission,
       });

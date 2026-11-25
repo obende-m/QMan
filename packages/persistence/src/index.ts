@@ -18,3 +18,4 @@ export * from "./migrator.js";
 export * from "./repositories.js";
 export * from "./configuration.js";
 export * from "./configuration-writer.js";
+export * from "./platform.js";
