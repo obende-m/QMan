@@ -234,11 +234,12 @@ addressed, **run a single machine**.
    `https://app.qman.example` — the origin only, no path, no trailing slash. The
    API validates this at startup and refuses anything else.
 
-The build produces four entry points:
+The build produces five entry points:
 
 | Path | Surface |
 |---|---|
-| `/` | Staff app |
+| `/` | Public product page (no sign-in) |
+| `/app` | Staff app (`app.html`) |
 | `/display.html?board=<id>` | Display board |
 | `/track.html` | Patient tracker |
 | `/platform.html` | Platform administration |
@@ -273,7 +274,7 @@ organization — Freshsprings Medical Services — through the portal, which rec
 who created it and when.
 
 Creating an organization returns its administrator's password **once**, in the
-same way. That administrator signs in at `https://app.qman.example/` with the
+same way. That administrator signs in at `https://app.qman.example/app` with the
 organization code, their username and that password.
 
 ---
@@ -288,7 +289,7 @@ In this order, because each failure has a distinct cause.
 | 2 | Sign in to `/platform.html` | Bootstrap did not run, or credentials are wrong |
 | 3 | **Reload the page.** Still signed in? | **The cookie is being dropped — §0.1.** This is where a wrong domain layout shows up |
 | 4 | Create an organization | Provisioning or the database |
-| 5 | Sign in to `/` with the org code | Organization login |
+| 5 | Sign in to `/app` with the org code | Organization login |
 | 6 | Add a station in Administration | Configuration writes and CSRF |
 | 7 | Admit a patient | Admission, ticket allocation |
 | 8 | Open `/display.html?board=<id>` in another tab | Public surfaces |

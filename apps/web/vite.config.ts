@@ -6,9 +6,10 @@ import react from "@vitejs/plugin-react";
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * Three applications, one repository.
+ * Five pages, one repository.
  *
- * The staff app, the display board and the patient tracker are separate builds
+ * The public product page (index.html), the staff app (app.html), the display
+ * board, the patient tracker and the platform portal are separate builds
  * rather than routes, so the public surfaces ship none of the staff code that
  * can mutate clinical state. They share the domain engine, the design system
  * and the component library — but not the bundle.
@@ -19,7 +20,8 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
-        staff: resolve(here, "index.html"),
+        site: resolve(here, "index.html"),
+        staff: resolve(here, "app.html"),
         display: resolve(here, "display.html"),
         track: resolve(here, "track.html"),
         platform: resolve(here, "platform.html"),
