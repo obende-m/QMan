@@ -203,7 +203,7 @@ export function registerAdministrationRoutes(
 
   app.patch(`${V1}/users/:id`, guarded("admin.users"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return refuse(reply, 404, "No such account.");
+    if (!isUuid(id)) return refuse(reply, 400, "That identifier is not valid.");
     const body = (request.body ?? {}) as Record<string, unknown>;
     const hospitalId = tenantOf(request);
     const caller = request.authenticated!;
@@ -300,7 +300,7 @@ export function registerAdministrationRoutes(
 
   app.post(`${V1}/users/:id/reset-password`, guarded("admin.users"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return refuse(reply, 404, "No such account.");
+    if (!isUuid(id)) return refuse(reply, 400, "That identifier is not valid.");
     const hospitalId = tenantOf(request);
     const existing = await repo.findUser(hospitalId, id);
     if (existing === null) return refuse(reply, 404, "No such account.");
@@ -326,7 +326,7 @@ export function registerAdministrationRoutes(
 
   app.post(`${V1}/users/:id/unlock`, guarded("admin.users"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return refuse(reply, 404, "No such account.");
+    if (!isUuid(id)) return refuse(reply, 400, "That identifier is not valid.");
     const hospitalId = tenantOf(request);
     const existing = await repo.findUser(hospitalId, id);
     if (existing === null) return refuse(reply, 404, "No such account.");
@@ -411,7 +411,7 @@ export function registerAdministrationRoutes(
 
   app.post(`${V1}/sessions/:id/revoke`, guarded("admin.users"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return refuse(reply, 404, "No such session.");
+    if (!isUuid(id)) return refuse(reply, 400, "That identifier is not valid.");
     const hospitalId = tenantOf(request);
     const at = deps.now();
     const holder = await write(async (tx, audit) => {
@@ -456,7 +456,7 @@ export function registerAdministrationRoutes(
 
   app.patch(`${V1}/branches/:id`, guarded("admin.settings"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return refuse(reply, 404, "No such branch.");
+    if (!isUuid(id)) return refuse(reply, 400, "That identifier is not valid.");
     const body = (request.body ?? {}) as Record<string, unknown>;
     const hospitalId = tenantOf(request);
 

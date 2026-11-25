@@ -598,9 +598,9 @@ describe("transitions", () => {
     expect(response.statusCode).toBe(409);
   });
 
-  it("answers a malformed id as not found rather than as a fault", async () => {
+  it("answers a malformed id as a bad request rather than as a fault", async () => {
     const response = await h.request("reception", "POST", "/api/v1/visits/not-a-uuid/call");
-    expect(response.statusCode).toBe(404);
+    expect(response.statusCode).toBe(400);
   });
 
   it("changes priority only with visit.escalate, and records it", async () => {

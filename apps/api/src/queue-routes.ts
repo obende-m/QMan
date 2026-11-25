@@ -229,7 +229,7 @@ async function act<TPrepared = undefined>(
   const authenticated = request.authenticated!;
 
   if (!isUuid(id)) {
-    void reply.status(404).send({ error: "No such visit." });
+    void reply.status(400).send({ error: "That identifier is not valid." });
     return;
   }
 
@@ -622,7 +622,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
 
   app.get(`${V1}/stations/:stationId/queue`, guarded("queue.call"), async (request, reply) => {
     const { stationId } = request.params as { stationId: string };
-    if (!isUuid(stationId)) return reply.status(404).send({ error: "No such station." });
+    if (!isUuid(stationId)) return reply.status(400).send({ error: "That identifier is not valid." });
 
     const branch = pinnedBranch(request);
     const visits = (await deps.visits.openAtStation(tenantOf(request), StationId(stationId)))
@@ -633,7 +633,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
 
   app.get(`${V1}/branches/:branchId/visits`, guarded("reports.view"), async (request, reply) => {
     const { branchId } = request.params as { branchId: string };
-    if (!isUuid(branchId)) return reply.status(404).send({ error: "No such branch." });
+    if (!isUuid(branchId)) return reply.status(400).send({ error: "That identifier is not valid." });
 
     const branch = pinnedBranch(request);
     if (branch !== null && branch !== branchId) {
@@ -728,7 +728,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
     const admission = deps.admission;
     if (admission === undefined) return reply.status(503).send({ error: "Not available." });
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return reply.status(404).send({ error: "No such visit." });
+    if (!isUuid(id)) return reply.status(400).send({ error: "That identifier is not valid." });
     const visit = await deps.visits.find(tenantOf(request), VisitId(id));
     const branch = pinnedBranch(request);
     if (visit === null || (branch !== null && visit.branchId !== branch)) {
@@ -749,7 +749,7 @@ export function registerQueueRoutes(app: FastifyInstance, deps: QueueRouteDepend
    */
   app.get(`${V1}/visits/:id`, guarded("reports.view"), async (request, reply) => {
     const { id } = request.params as { id: string };
-    if (!isUuid(id)) return reply.status(404).send({ error: "No such visit." });
+    if (!isUuid(id)) return reply.status(400).send({ error: "That identifier is not valid." });
     const visit = await deps.visits.find(tenantOf(request), VisitId(id));
     const branch = pinnedBranch(request);
     if (visit === null || (branch !== null && visit.branchId !== branch)) {
