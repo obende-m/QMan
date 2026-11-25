@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npm run build:deps && vite",
     "build": "npm run build:deps && vite build",
-    "build:deps": "tsc --build ../../tsconfig.json",
+    "build:deps": "tsc --build ../../packages/domain",
     "preview": "vite preview"
   },
   "dependencies": {
