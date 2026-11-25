@@ -83,7 +83,21 @@ export function createMemoryLockoutStore(): LockoutStore {
   };
 }
 
+/**
+ * What authentication needs to know about organizations.
+ *
+ * Optional so that suites about passwords and lockout need not build one, and
+ * supplied by every deployment. Without it, two checks degrade to their safe
+ * reading: a requested branch is honoured only if the account is explicitly
+ * assigned to it, and suspension is not checked on session resolution.
+ */
+export interface OrganizationLookup {
+  findById(id: string): Promise<{ id: string; status: string } | null>;
+  findByBranch(branchId: string): Promise<{ id: string; status: string } | null>;
+}
+
 export interface AuthDependencies {
+  readonly organizations?: OrganizationLookup;
   readonly accounts: AccountRepository;
   readonly sessions: SessionRepository;
   readonly lockouts: LockoutStore;
@@ -106,6 +120,8 @@ export interface ResolvedSession {
   readonly session: Session;
   /** The tenant the account belongs to, as stored. */
   readonly hospitalId: string;
+  /** Set when the password must be replaced before anything else is allowed. */
+  readonly passwordChangeRequired?: boolean;
 }
 
 export type SignInResult =
@@ -115,6 +131,7 @@ export type SignInResult =
       readonly session: Session;
       /** Returned exactly once. Only its hash is stored. */
       readonly token: string;
+      readonly passwordChangeRequired: boolean;
     }
   | { readonly ok: false; readonly failure: Extract<AuthOutcome, { ok: false }> };
 
@@ -198,7 +215,7 @@ export class AuthService {
       await this.#rehash(stored, credentials.password);
     }
 
-    const branchId = this.#resolveBranch(stored, credentials.branchId);
+    const branchId = await this.#resolveBranch(stored, credentials.branchId);
     const session: Session = {
       id: newId(),
       userId: stored.account.id,
@@ -215,7 +232,13 @@ export class AuthService {
     const token = issueToken();
     await sessions.create(session, hashToken(token));
 
-    return { ok: true, user: authenticatedUser(stored, branchId), session, token };
+    return {
+      ok: true,
+      user: authenticatedUser(stored, branchId),
+      session,
+      token,
+      passwordChangeRequired: stored.passwordChangeRequired === true,
+    };
   }
 
   /**
@@ -247,6 +270,19 @@ export class AuthService {
       return null;
     }
 
+    /*
+     * Suspension takes effect on the next request, not at token expiry.
+     *
+     * Refusing only new sign-ins would leave every session already open working
+     * for the rest of its life — a suspended organization's whole morning shift
+     * carrying on as if nothing had happened. The session is not ended: a
+     * reactivated organization's staff carry on where they were.
+     */
+    if (this.#deps.organizations) {
+      const organization = await this.#deps.organizations.findById(stored.hospitalId);
+      if (organization === null || organization.status !== "active") return null;
+    }
+
     touch(session, at);
     await sessions.save(session);
 
@@ -256,6 +292,7 @@ export class AuthService {
       // Carried from the account, never from the request. Authorization
       // compares the two, and a request that disagrees is refused.
       hospitalId: stored.hospitalId,
+      passwordChangeRequired: stored.passwordChangeRequired === true,
     };
   }
 
@@ -287,11 +324,36 @@ export class AuthService {
    * avoids configuring something it does not have. A request for a branch the
    * user does not hold falls back to no branch rather than being honoured.
    */
-  #resolveBranch(stored: StoredAccount, requested: BranchId | null): BranchId | null {
-    if (requested === null) return null;
+  /**
+   * The branch a new session is pinned to.
+   *
+   * `null` means organization-wide, so it may only ever be the answer for an
+   * account that is organization-wide. Two mistakes are closed here:
+   *
+   * - An account assigned to particular branches that asked for none — or for
+   *   one it is not assigned to — used to be given `null`, which is every
+   *   branch. It is now pinned to the first branch it holds.
+   * - An organization-wide account could name any branch id at all, including
+   *   another organization's, and admission would then create visits in it. A
+   *   requested branch is now honoured only once it is known to belong to the
+   *   account's own organization.
+   */
+  async #resolveBranch(
+    stored: StoredAccount,
+    requested: BranchId | null,
+  ): Promise<BranchId | null> {
     const granted = stored.account.branchIds;
-    if (granted.length === 0 || granted.includes(requested)) return requested;
-    return null;
+
+    if (granted.length > 0) {
+      if (requested !== null && granted.includes(requested)) return requested;
+      return granted[0]!;
+    }
+
+    if (requested === null) return null;
+    const owner = await this.#deps.organizations?.findByBranch(requested);
+    return owner !== undefined && owner !== null && owner.id === stored.hospitalId
+      ? requested
+      : null;
   }
 }
 

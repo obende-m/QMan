@@ -329,3 +329,74 @@ invalidate, so everyone signs in again.
 
 Take a `pg_dump` before every migration regardless. Neon's point-in-time restore
 is the faster path if you have it.
+
+---
+
+## 9. Operational changes in the completion release
+
+These apply to every hosting option above.
+
+### 9.1 New migrations
+
+| # | Migration | Effect on an existing database |
+|---|---|---|
+| 013 | `visit_integrity` | Adds CHECK constraints on `visits.priority` and `visits.status`, a `version` column (default 0) for optimistic locking, and an index for the closure job. Any row with an unrecognised priority is reset to `normal` first, and an `visit.priority_repaired` audit record is written for each. |
+| 014 | `account_administration` | Adds `users.password_change_required`, `password_changed_at`, `last_sign_in_at` and two indexes. Existing accounts are unaffected (`false`). |
+
+Both are additive and forward-only. Run `npm run migrate -w @qman/api` before
+starting the new version, as for every release.
+
+### 9.2 New environment variables
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `QMAN_TRUST_PROXY` | unset (trust nobody) | Set to `1` behind a single platform proxy (Render, Railway, Fly), or to the proxy addresses/CIDRs. Without it, rate limits key on the proxy's address and one bad actor locks out the hospital. `true` is refused. |
+| `QMAN_VISIT_CLOSE_AFTER_MINUTES` | 120 | Grace period before a completed or cancelled visit is closed. Closing retires its tracking link. |
+| `QMAN_VISIT_ABANDON_AFTER_HOURS` | 18 | An unfinished visit older than this is cancelled as abandoned, then closed. |
+| `QMAN_VISIT_CLOSURE_INTERVAL_SECONDS` | 300 | How often the maintenance job runs. |
+
+### 9.3 Health endpoints
+
+- `GET /api/health` now checks the database (bounded at 3 s) and answers **503**
+  when it is unreachable. Keep it as the load balancer health check: an
+  instance that cannot reach the database should not receive traffic.
+- `GET /api/live` answers 200 whenever the process is serving HTTP. Use it for
+  a liveness probe where the platform distinguishes the two, so a database
+  outage does not cause restart loops.
+
+### 9.4 Background maintenance
+
+The API process runs the visit closure job and prunes idempotency keys (older
+than 24 h) and stale sign-in counters. Running more than one instance is safe:
+the versioned save means two instances racing on the same visit lose cleanly
+and log a conflict. The job stops before the HTTP server on `SIGTERM`.
+
+### 9.5 First organisation administrator
+
+The administrator password returned by the Platform portal when an
+organisation is created (and by "reset administrator") is **temporary**. The
+holder is shown a change-password screen at first sign-in and can do nothing
+else until it is replaced. The same applies to staff accounts created or reset
+in Administration → Staff Accounts.
+
+### 9.6 Display boards and patient tracking
+
+Boards and the tracker now use only the public endpoints and need no session.
+
+- Board: `https://<web>/display.html?board=<board id>` — open it from
+  Administration → Display Boards, which links each board. Boards poll every 4 s and show "Not
+  updating" after 30 s without a response.
+- Tracker: the ticket's QR encodes `track.html?t=<token>`. Set each ticket
+  template's tracking URL to the absolute tracker address,
+  e.g. `https://qman.hospital.example/track.html`. Reprinting a ticket issues a
+  new token and retires the old QR. Typed Journey Codes work from
+  `track.html?b=<branch id>` and are rate limited to six attempts a minute.
+
+### 9.7 What is still required before a pilot
+
+1. Run `npm run verify:db -w @qman/api` against a PostgreSQL 13+ database and
+   fix anything it finds. These suites were updated for this release but have
+   **not** been run in the environment that produced it.
+2. Run the smoke test (§6) end to end, including a board on a second device and
+   a tracker on a phone.
+3. Take and restore a backup (RUNBOOK) before the first patient is admitted.

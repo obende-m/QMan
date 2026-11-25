@@ -167,10 +167,13 @@ export class PostgresOrganizationProvisioning implements OrganizationProvisionin
       );
 
       await tx.query(
+        // The password is generated and shown once to whoever provisioned the
+        // organization, so its holder must replace it on first sign-in.
         `INSERT INTO users
            (hospital_id, role_id, display_name, username, provider_id,
-            password_hash, password_salt, enabled, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'local', $5, $6, true, $7, $7)`,
+            password_hash, password_salt, enabled, password_change_required,
+            created_at, updated_at)
+         VALUES ($1, $2, $3, $4, 'local', $5, $6, true, true, $7, $7)`,
         [
           hospitalId,
           adminRoleId,
@@ -218,7 +221,8 @@ export class PostgresOrganizationProvisioning implements OrganizationProvisionin
 
     await this.db.transaction(async (tx) => {
       await tx.query(
-        `UPDATE users SET password_hash = $2, password_salt = $3, updated_at = $4
+        `UPDATE users SET password_hash = $2, password_salt = $3, updated_at = $4,
+           password_change_required = true, password_changed_at = $4
          WHERE id = $1`,
         [user.id, hashed.hash, hashed.salt, input.at],
       );

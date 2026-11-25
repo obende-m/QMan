@@ -90,6 +90,17 @@ export const ADMIN_EVENT_TYPES = [
   "config.role_created",
   "config.role_updated",
   "config.role_deleted",
+  "config.branch_created",
+  "config.branch_updated",
+  /** Account administration: who added, changed or withdrew whose access. */
+  "admin.user_created",
+  "admin.user_updated",
+  "admin.user_disabled",
+  "admin.user_enabled",
+  "admin.password_reset",
+  "admin.account_unlocked",
+  /** Recorded by a migration that repaired a value the application could not read. */
+  "visit.priority_repaired",
 ] as const;
 
 export const SECURITY_EVENT_TYPES = [

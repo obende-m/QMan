@@ -127,7 +127,7 @@ describe("Manager Dashboard", () => {
     // each step landed rather than letting a silent refusal pass as success.
     for (const worklist of store.allWorklists()) {
       for (const item of [...worklist.waiting, ...(worklist.current ? [worklist.current] : [])]) {
-        await store.recall(item.visitId, USER_ID);
+        await store.call(item.visitId, USER_ID);
         expect((await store.complete(item.visitId, USER_ID)).ok).toBe(true);
       }
     }

@@ -38,6 +38,10 @@ export type Permission = keyof typeof PERMISSIONS;
 
 export const ALL_PERMISSIONS = Object.keys(PERMISSIONS) as Permission[];
 
+export function isPermission(value: unknown): value is Permission {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(PERMISSIONS, value);
+}
+
 /** Grouping for the administration UI, so the list is navigable. */
 export const PERMISSION_GROUPS: ReadonlyArray<{
   readonly name: string;
@@ -168,11 +172,22 @@ export function validateRoles(roles: readonly RoleConfig[]): string[] {
    * refused by this one rather than accepted as an unrecognised string.
    */
   for (const role of roles) {
-    for (const permission of role.permissions) {
-      if (isPlatformPermission(permission)) {
+    if (!Array.isArray(role.permissions)) {
+      problems.push(`“${role.name}” must list its permissions.`);
+      continue;
+    }
+    for (const permission of role.permissions as readonly unknown[]) {
+      if (typeof permission !== "string") {
+        problems.push(`“${role.name}” lists a permission that is not a name.`);
+      } else if (isPlatformPermission(permission)) {
         problems.push(
           `“${role.name}” asks for ${permission}, which belongs to QMan platform administration and cannot be granted by a hospital.`,
         );
+      } else if (!isPermission(permission)) {
+        // An unknown name is refused rather than stored. Stored, it is a grant
+        // that no guard ever checks, until a release adds a permission of that
+        // name and the role silently acquires it.
+        problems.push(`“${role.name}” asks for ${permission}, which is not a QMan permission.`);
       }
     }
   }

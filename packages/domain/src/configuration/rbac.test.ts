@@ -79,4 +79,22 @@ describe("role validation", () => {
     expect(problems.some((p) => /both called/.test(p))).toBe(true);
     expect(problems.some((p) => /needs a name/.test(p))).toBe(true);
   });
+
+  it("refuses a permission that is not in the catalogue", () => {
+    const problems = validateRoles([
+      ...DEFAULT_ROLES,
+      { ...DEFAULT_ROLES[0]!, id: "x", name: "Typo", permissions: ["queue.cal" as never] },
+    ]);
+    expect(problems.some((p) => /queue\.cal, which is not a QMan permission/.test(p))).toBe(true);
+  });
+
+  it("refuses a permission list that is not a list of names", () => {
+    const problems = validateRoles([
+      ...DEFAULT_ROLES,
+      { ...DEFAULT_ROLES[0]!, id: "y", name: "Odd", permissions: [42 as never] },
+      { ...DEFAULT_ROLES[0]!, id: "z", name: "Odder", permissions: "queue.call" as never },
+    ]);
+    expect(problems.some((p) => /not a name/.test(p))).toBe(true);
+    expect(problems.some((p) => /must list its permissions/.test(p))).toBe(true);
+  });
 });

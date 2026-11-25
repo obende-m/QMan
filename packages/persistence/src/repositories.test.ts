@@ -15,6 +15,7 @@ import {
   PostgresSessionRepository,
   PostgresTicketAllocator,
   PostgresVisitRepository,
+  ConcurrentModificationError,
 } from "./repositories.js";
 import { FakeDatabase } from "./sql.js";
 
@@ -63,6 +64,7 @@ describe("visit repository", () => {
     const { visit, deps } = newVisit();
     const events = visit.pullEvents();
     const repo = new PostgresVisitRepository(db, deps);
+    db.willReturn([{ version: 0 }]);
 
     await repo.save(
       visit,
@@ -87,21 +89,74 @@ describe("visit repository", () => {
     expect(db.committed).toEqual([db.statements.length]);
   });
 
-  it("upserts rather than failing on a visit it has already saved", async () => {
+  it("inserts a new visit only if its id is not already taken", async () => {
     const { visit, deps } = newVisit();
     visit.pullEvents();
+    db.willReturn([{ version: 0 }]);
     await new PostgresVisitRepository(db, deps).save(visit, []);
 
     const sql = db.matching("insert into visits")[0]!.sql.toLowerCase();
-    expect(sql).toContain("on conflict (id) do update");
+    expect(sql).toContain("on conflict (id) do nothing");
+    expect(sql).not.toContain("do update");
+  });
+
+  it("updates a visit it has saved only at the version it holds", async () => {
+    const { visit, deps } = newVisit();
+    visit.pullEvents();
+    const repo = new PostgresVisitRepository(db, deps);
+    db.willReturn([{ version: 0 }]);
+    await repo.save(visit, []);
+
+    db.reset();
+    db.willReturn([{ version: 1 }]);
+    visit.call(UserId("user-1"));
+    await repo.save(visit, []);
+
+    const update = db.matching("update visits")[0]!;
+    expect(update.sql.toLowerCase()).toContain("where id = $1 and version = $11");
+    expect(update.sql.toLowerCase()).toContain("version = version + 1");
     // Immutable facts must not be overwritten by a later save.
-    expect(sql).not.toContain("created_at = excluded");
-    expect(sql).not.toContain("journey_code = excluded");
+    expect(update.sql.toLowerCase()).not.toContain("created_at =");
+    expect(update.sql.toLowerCase()).not.toContain("journey_code =");
+    expect(update.params[10]).toBe(0);
+
+    // The next save states the version the last one produced.
+    db.reset();
+    db.willReturn([{ version: 2 }]);
+    await repo.save(visit, []);
+    expect(db.matching("update visits")[0]!.params[10]).toBe(1);
+  });
+
+  it("refuses a stale write and writes nothing after it", async () => {
+    const { visit, deps } = newVisit();
+    visit.pullEvents();
+    const repo = new PostgresVisitRepository(db, deps);
+    db.willReturn([{ version: 0 }]);
+    await repo.save(visit, []);
+
+    db.reset();
+    // The conditional UPDATE matches no row: someone else wrote first.
+    db.willReturn([]);
+    visit.call(UserId("user-1"));
+    await expect(repo.save(visit, [])).rejects.toBeInstanceOf(ConcurrentModificationError);
+    expect(db.matching("insert into queue_entries")).toHaveLength(0);
+    expect(db.matching("insert into events")).toHaveLength(0);
+    expect(db.committed).toEqual([]);
+  });
+
+  it("refuses to insert over a visit that already exists", async () => {
+    const { visit, deps } = newVisit();
+    visit.pullEvents();
+    db.willReturn([]);
+    await expect(
+      new PostgresVisitRepository(db, deps).save(visit, []),
+    ).rejects.toBeInstanceOf(ConcurrentModificationError);
   });
 
   it("updates the mutable parts of a queue entry only", async () => {
     const { visit, deps } = newVisit();
     visit.pullEvents();
+    db.willReturn([{ version: 0 }]);
     await new PostgresVisitRepository(db, deps).save(visit, []);
 
     const sql = db.matching("insert into queue_entries")[0]!.sql.toLowerCase();
@@ -114,8 +169,23 @@ describe("visit repository", () => {
   it("writes nothing to events when there are none", async () => {
     const { visit, deps } = newVisit();
     visit.pullEvents();
+    db.willReturn([{ version: 0 }]);
     await new PostgresVisitRepository(db, deps).save(visit, []);
     expect(db.matching("insert into events")).toHaveLength(0);
+  });
+
+  it("reissues a tracking token only for an open visit the tenant owns", async () => {
+    const { deps } = newVisit();
+    db.willReturn([{ id: "v" }]);
+    const ok = await new PostgresVisitRepository(db, deps).reissueTrackingToken(
+      HOSPITAL,
+      VisitId("v"),
+      "hash",
+    );
+    expect(ok).toBe(true);
+    const sql = db.statements[0]!.sql.toLowerCase();
+    expect(sql).toContain("b.hospital_id = $2");
+    expect(sql).toContain("closed_at is null");
   });
 
   it("looks up an active visit by journey code, scoped to the branch", async () => {

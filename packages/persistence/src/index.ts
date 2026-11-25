@@ -19,3 +19,4 @@ export * from "./repositories.js";
 export * from "./configuration.js";
 export * from "./configuration-writer.js";
 export * from "./platform.js";
+export * from "./administration.js";

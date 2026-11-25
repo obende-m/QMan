@@ -111,7 +111,7 @@ export function queueItemsFor(
       items.push({
         visitId: visit.id,
         journeyCode: visit.journeyCode,
-        patientName: visit.patient.name,
+        patientName: visit.patient.name || `Ticket ${entry.queueLabel}`,
         priority: visit.priority,
         entry,
       });
@@ -226,13 +226,39 @@ export function estimatedWaitForNewArrival(
 }
 
 /**
- * How a member of staff is identified on a dashboard.
+ * Names for staff ids, from `GET /api/v1/staff`.
  *
- * TODO(backend): there is no user directory endpoint, so a workload panel can
- * only show the identifier it was given. `GET /api/v1/users` would let this
- * show names. Deliberately not fabricated: an invented name on a staffing
- * report is worse than an identifier nobody has to interpret.
+ * Filled once after sign-in by the application. Until it is — or for a caller
+ * without `reports.view`, who never receives it — a panel shows the id it was
+ * given rather than an invented name: a made-up name on a staffing report is
+ * worse than an identifier nobody has to interpret.
  */
+const staffNames = new Map<string, string>();
+
+export function setStaffDirectory(entries: ReadonlyArray<{ id: string; displayName: string }>): void {
+  staffNames.clear();
+  for (const entry of entries) staffNames.set(entry.id, entry.displayName);
+}
+
 export function staffLabel(userId: string | null): string {
-  return userId ?? "Unassigned";
+  if (userId === null) return "Unassigned";
+  return staffNames.get(userId) ?? userId;
+}
+
+/**
+ * How a visit is named on a staff screen.
+ *
+ * The server withholds identity from callers without `visit.view_identity`
+ * and sends an empty name. An empty name must never render as a blank row or
+ * read as "this patient has no name", so the ticket stands in for it.
+ */
+export function patientLabel(visit: Visit): string {
+  if (visit.patient.name.trim() !== "") return visit.patient.name;
+  const ticket = visit.currentEntry?.queueLabel ?? visit.queueEntries.at(-1)?.queueLabel;
+  return ticket ? `Ticket ${ticket}` : visit.journeyCode;
+}
+
+/** Whether identity was withheld from this caller, so screens can say so. */
+export function identityWithheld(visit: Visit): boolean {
+  return visit.patient.name.trim() === "";
 }

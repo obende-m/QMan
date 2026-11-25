@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConfigurationError, loadConfig } from "./config.js";
+import { ConfigurationError, loadConfig, parseTrustProxy } from "./config.js";
 import { loadMigrations, migrationsDirectory } from "./migrations.js";
 
 const MINIMUM = {
@@ -136,7 +136,30 @@ describe("migration loading", () => {
       "010_platform_login_throttle",
       "011_organization_lifecycle",
       "012_administrative_events_have_no_branch",
+      "013_visit_integrity",
+      "014_account_administration",
     ]);
     expect(migrations[0]!.sql).toContain("CREATE TABLE hospitals");
+  });
+});
+
+describe("trusted proxies", () => {
+  it("trusts no proxy unless told to", () => {
+    expect(parseTrustProxy(undefined)).toBe(false);
+    expect(parseTrustProxy("false")).toBe(false);
+  });
+
+  it("accepts a hop count or a list of proxy addresses", () => {
+    expect(parseTrustProxy("1")).toBe(1);
+    expect(parseTrustProxy("10.0.0.0/8, 127.0.0.1")).toEqual(["10.0.0.0/8", "127.0.0.1"]);
+  });
+
+  it("refuses to trust every hop, which would let a client choose its own address", () => {
+    expect(() => parseTrustProxy("true")).toThrow(ConfigurationError);
+    expect(() => parseTrustProxy("*")).toThrow(ConfigurationError);
+  });
+
+  it("refuses something that is not an address", () => {
+    expect(() => parseTrustProxy("my-proxy.example")).toThrow(ConfigurationError);
   });
 });

@@ -15,6 +15,7 @@ import {
   hasBlockingProblems,
   problemsFor,
   type ConfigProblem,
+  type Permission,
 } from "@qman/domain";
 import { Card, CardHeader } from "../../components/ui/Card.js";
 import { cn } from "../../components/ui/cn.js";
@@ -30,6 +31,8 @@ import { DisplayBoardsSection } from "./DisplayBoardsSection.js";
 import { WorkflowsSection } from "./WorkflowsSection.js";
 import { RolesSection } from "./RolesSection.js";
 import { SessionsSection } from "./SessionsSection.js";
+import { UsersSection } from "./UsersSection.js";
+import { BranchesSection } from "./BranchesSection.js";
 import { useAuth } from "../../data/useAuth.js";
 import { HospitalSection } from "./HospitalSection.js";
 
@@ -60,6 +63,8 @@ export type AdminSection =
   | "announcements"
   | "tickets"
   | "roles"
+  | "users"
+  | "branches"
   | "sessions";
 
 const SECTIONS: ReadonlyArray<{
@@ -111,12 +116,38 @@ const SECTIONS: ReadonlyArray<{
     icon: <Users className="size-4" />,
   },
   {
+    key: "users",
+    label: "Staff Accounts",
+    description: "Add staff, set their role and branches, reset passwords",
+    icon: <ShieldCheck className="size-4" />,
+  },
+  {
+    key: "branches",
+    label: "Branches",
+    description: "The organization's sites",
+    icon: <Building2 className="size-4" />,
+  },
+  {
     key: "sessions",
     label: "Sessions",
     description: "Who is signed in, and on which machine",
     icon: <MonitorSmartphone className="size-4" />,
   },
 ];
+
+/** What each section needs, mirroring the routes it writes to. */
+const SECTION_PERMISSION: Record<AdminSection, Permission> = {
+  hospital: "admin.settings",
+  stations: "admin.stations",
+  workflows: "admin.workflows",
+  boards: "admin.display_boards",
+  announcements: "admin.settings",
+  tickets: "admin.settings",
+  roles: "admin.users",
+  users: "admin.users",
+  branches: "admin.settings",
+  sessions: "admin.users",
+};
 
 export interface AdminPortalProps {
   store?: ConfigStore;
@@ -152,7 +183,7 @@ export function AdminPortal({
       <div className="grid gap-6 lg:grid-cols-[minmax(0,240px)_minmax(0,1fr)]">
         <nav aria-label="Administration sections" className="lg:sticky lg:top-4 lg:self-start">
           <ul className="flex flex-wrap gap-1 lg:flex-col">
-            {SECTIONS.map((item) => {
+            {SECTIONS.filter((item) => auth.can(SECTION_PERMISSION[item.key])).map((item) => {
               const selected = item.key === section;
               const sectionProblems = problemsFor(problems, pathFor(item.key));
               const hasErrors = hasBlockingProblems(sectionProblems);
@@ -196,7 +227,17 @@ export function AdminPortal({
             <TicketsSection store={config} problems={problems} />
           )}
           {section === "roles" && <RolesSection store={config} />}
-          {section === "sessions" && <SessionsSection />}
+          {section === "users" && (
+            <UsersSection
+              api={stores.administration}
+              roles={config.roles}
+              currentUserId={auth.currentUser()?.id ?? ""}
+            />
+          )}
+          {section === "branches" && (
+            <BranchesSection api={stores.administration} onChanged={() => void config.load()} />
+          )}
+          {section === "sessions" && <SessionsSection api={stores.administration} />}
         </div>
       </div>
     </div>
@@ -221,6 +262,10 @@ function pathFor(section: AdminSection): string {
       return "roles";
     case "sessions":
       return "sessions";
+    case "users":
+      return "users";
+    case "branches":
+      return "branches";
   }
 }
 

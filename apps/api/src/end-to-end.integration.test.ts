@@ -30,6 +30,7 @@ import {
   createPostgresDatabase,
   migrate,
   PostgresAccountRepository,
+  PostgresAdministrationRepository,
   PostgresBoardDirectory,
   PostgresConfigurationRepository,
   PostgresConfigurationWriter,
@@ -161,6 +162,11 @@ suite("QMan end to end, against real PostgreSQL", () => {
         provisioning: new PostgresOrganizationProvisioning(db, writer),
       },
       stream: liveStream,
+      administration: {
+        db,
+        administration: new PostgresAdministrationRepository(db),
+        accounts: new PostgresAccountRepository(db),
+      },
       secureCookies: true,
       allowedOrigins: [ORIGIN],
       logger: createLogger({ write: (line) => { if (line.includes("unhandled")) console.error(line); } }),
@@ -254,8 +260,25 @@ suite("QMan end to end, against real PostgreSQL", () => {
       payload: { organization: code, username: "admin", password },
     });
     expect(response.statusCode).toBe(200);
-    return callerFrom(response.headers["set-cookie"], SESSION_COOKIE);
+    const caller = callerFrom(response.headers["set-cookie"], SESSION_COOKIE);
+
+    // A provisioned password is temporary: the administrator replaces it
+    // before anything else is allowed, exactly as a real one would.
+    if (response.json().user.passwordChangeRequired === true) {
+      const changed = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/password",
+        headers: writing(caller),
+        payload: { currentPassword: password, newPassword: `${password} and then some` },
+      });
+      expect(changed.statusCode).toBe(200);
+      replacedPasswords.set(password, `${password} and then some`);
+    }
+    return caller;
   }
+
+  /** A provisioned password, once replaced, is signed in with its replacement. */
+  const replacedPasswords = new Map<string, string>();
 
   /**
    * Extends the starter configuration a new organization arrives with.

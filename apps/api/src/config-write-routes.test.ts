@@ -23,7 +23,7 @@ import {
   HOSPITAL,
   ORIGIN,
   PASSWORD,
-  primeConfigurationRead,
+  primeConfigurationWrite,
   RecordingWriter,
   STATION,
   fakeOrganizations,
@@ -82,7 +82,7 @@ describe("configuration writes", () => {
     accounts.accounts.push(await account(["admin.stations"]));
     const app = server();
     const { cookie, csrf } = await signIn(app);
-    primeConfigurationRead(db, configuration());
+    primeConfigurationWrite(db, configuration());
 
     const response = await app.inject({
       method: "PATCH",
@@ -102,7 +102,7 @@ describe("configuration writes", () => {
     accounts.accounts.push(await account(["admin.stations"]));
     const app = server();
     const { cookie, csrf } = await signIn(app);
-    primeConfigurationRead(db, configuration());
+    primeConfigurationWrite(db, configuration());
 
     await app.inject({
       method: "PATCH",
@@ -126,7 +126,7 @@ describe("configuration writes", () => {
     accounts.accounts.push(await account(["admin.stations"]));
     const app = server();
     const { cookie, csrf } = await signIn(app);
-    primeConfigurationRead(db, configuration());
+    primeConfigurationWrite(db, configuration());
 
     const response = await app.inject({
       method: "PATCH",
@@ -146,7 +146,7 @@ describe("configuration writes", () => {
     accounts.accounts.push(await account(["admin.stations"]));
     const app = server();
     const { cookie, csrf } = await signIn(app);
-    primeConfigurationRead(db, configuration());
+    primeConfigurationWrite(db, configuration());
 
     const response = await app.inject({
       method: "PATCH",
@@ -160,12 +160,86 @@ describe("configuration writes", () => {
     expect(problems[0]!.path).toContain("stations");
   });
 
+  describe("integrity", () => {
+    it("takes the organization lock before reading what it validates", async () => {
+      accounts.accounts.push(await account(["admin.stations"]));
+      const app = server();
+      const { cookie, csrf } = await signIn(app);
+      db.reset();
+      primeConfigurationWrite(db, configuration());
+
+      await app.inject({
+        method: "PATCH",
+        url: `/api/v1/stations/${STATION}`,
+        headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf },
+        payload: { name: "Consulting" },
+      });
+
+      const first = db.statements.find((s) => /hospitals/i.test(s.sql))!;
+      expect(first.sql).toMatch(/FOR UPDATE/);
+      expect(db.statements.indexOf(first)).toBeLessThan(
+        db.statements.findIndex((s) => /FROM stations/i.test(s.sql)),
+      );
+    });
+
+    it("refuses a field of the wrong type instead of failing on it", async () => {
+      accounts.accounts.push(await account(["admin.stations"]));
+      const app = server();
+      const { cookie, csrf } = await signIn(app);
+      primeConfigurationWrite(db, configuration());
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/stations/${STATION}`,
+        headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf },
+        payload: { name: 42 },
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json().field).toBe("name");
+      expect(writer.stations).toEqual([]);
+      expect(db.matching("insert into events")).toHaveLength(0);
+    });
+
+    it("refuses an object carrying keys the field does not have", async () => {
+      accounts.accounts.push(await account(["admin.stations"]));
+      const app = server();
+      const { cookie, csrf } = await signIn(app);
+      primeConfigurationWrite(db, configuration());
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: `/api/v1/stations/${STATION}`,
+        headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf },
+        payload: { sla: { targetWaitMillis: 900_000, saturationPoint: 15, surprise: true } },
+      });
+      expect(response.statusCode).toBe(422);
+    });
+
+    it("answers a change to something that does not exist with 404, and audits nothing", async () => {
+      accounts.accounts.push(await account(["admin.stations"]));
+      const app = server();
+      const { cookie, csrf } = await signIn(app);
+      primeConfigurationWrite(db, configuration());
+
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/api/v1/stations/12345678-1234-4234-8234-123456789012",
+        headers: { cookie, origin: ORIGIN, "x-csrf-token": csrf },
+        payload: { name: "Ghost" },
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(db.matching("insert into events")).toHaveLength(0);
+    });
+  });
+
   describe("audit", () => {
     it("records who changed what, from what, to what", async () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       await app.inject({
         method: "PATCH",
@@ -195,7 +269,7 @@ describe("configuration writes", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       await app.inject({
         method: "PATCH",
@@ -216,7 +290,7 @@ describe("configuration writes", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       await app.inject({
         method: "PATCH",
@@ -235,7 +309,7 @@ describe("configuration writes", () => {
       accounts.accounts.push(await account(["admin.stations"]));
       const app = server();
       const { cookie, csrf } = await signIn(app);
-      primeConfigurationRead(db, configuration());
+      primeConfigurationWrite(db, configuration());
 
       await app.inject({
         method: "PATCH",

@@ -60,7 +60,31 @@ export interface VisitWire {
   readonly createdAt: string;
   readonly completedAt: string | null;
   readonly closedAt: string | null;
+  /**
+   * True when the recipient may not see who the patient is, and `patient` has
+   * been emptied. A screen shows the ticket instead of a name; it must never
+   * read an empty name as "this patient has no name".
+   */
+  readonly identityWithheld?: boolean;
 }
+
+/**
+ * Whether a serialisation carries the patient's identity.
+ *
+ * Required rather than defaulted. The server decides per caller, from
+ * `visit.view_identity`, and a default of either value would let a new call
+ * site leak identity, or hide it, without anyone having chosen to.
+ */
+export interface VisitWireOptions {
+  readonly includeIdentity: boolean;
+}
+
+/** What a recipient without `visit.view_identity` is told about the patient. */
+export const WITHHELD_PATIENT = Object.freeze({
+  name: "",
+  hospitalNumber: null,
+  phone: null,
+});
 
 function entryToWire(entry: QueueEntry): QueueEntryWire {
   return {
@@ -100,18 +124,21 @@ function entryFromWire(wire: QueueEntryWire): QueueEntry {
   } as QueueEntry;
 }
 
-export function visitToWire(visit: Visit): VisitWire {
+export function visitToWire(visit: Visit, options: VisitWireOptions): VisitWire {
   const state = visit.toState();
   return {
     id: state.id,
     journeyCode: state.journeyCode,
     branchId: state.branchId,
     workflowId: state.workflowId,
-    patient: {
-      name: state.patient.name,
-      hospitalNumber: state.patient.hospitalNumber,
-      phone: state.patient.phone,
-    },
+    patient: options.includeIdentity
+      ? {
+          name: state.patient.name,
+          hospitalNumber: state.patient.hospitalNumber,
+          phone: state.patient.phone,
+        }
+      : { ...WITHHELD_PATIENT },
+    ...(options.includeIdentity ? {} : { identityWithheld: true }),
     status: state.status,
     priority: state.priority,
     currentQueueEntryId: state.currentQueueEntryId,

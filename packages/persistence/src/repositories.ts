@@ -71,13 +71,61 @@ export interface VisitRepository {
   activeInBranch(hospitalId: string, branchId: BranchId): Promise<Visit[]>;
   /** Resolves the token printed into a ticket's QR code. Open visits only. */
   findByTrackingToken(tokenHash: string): Promise<Visit | null>;
-  /** Persists the visit and its queue entries, and appends its events. */
+  /**
+   * Persists the visit and its queue entries, and appends its events.
+   *
+   * Optimistic: a visit this repository loaded is written only if nobody else
+   * has written it since, and a visit it did not load is written only if it
+   * does not exist yet. Either failure throws `ConcurrentModificationError`
+   * and writes nothing — including the events, which describe a change that
+   * did not happen.
+   */
   save(
     visit: Visit,
     events: readonly NewEvent[],
     options?: { trackingTokenHash?: string },
   ): Promise<void>;
   isJourneyCodeTaken(branchId: BranchId, code: JourneyCode): Promise<boolean>;
+  /**
+   * Replaces an open visit's tracking token.
+   *
+   * Used when an admission is retried: the first response — and the only copy
+   * of the first token — was lost, so a new token is minted and the old one
+   * stops working. Returns false for a visit that is closed or not the
+   * caller's.
+   */
+  reissueTrackingToken(hospitalId: string, id: VisitId, tokenHash: string): Promise<boolean>;
+  /**
+   * Open visits the closure job should look at, across every organization.
+   *
+   * The one deliberately unscoped read on this port, and named for the job
+   * that uses it. It returns each visit with its owner so the job records the
+   * closure under the right tenant; no route may call it.
+   */
+  awaitingClosure(criteria: ClosureCriteria): Promise<Array<{ hospitalId: string; visit: Visit }>>;
+}
+
+export interface ClosureCriteria {
+  /** Completed or cancelled before this instant: sealed. */
+  readonly finishedBefore: Date;
+  /** Admitted before this instant and still not finished: abandoned. */
+  readonly admittedBefore: Date;
+  readonly limit: number;
+}
+
+/**
+ * A visit changed between being read and being written.
+ *
+ * Expected under load rather than exceptional: two stations pressing a button
+ * for the same patient in the same second. The caller's view is stale, and the
+ * honest answer is a 409 telling them to look again.
+ */
+export class ConcurrentModificationError extends Error {
+  readonly code = "VISIT_CHANGED";
+  constructor(readonly visitId: string) {
+    super("This visit was changed by someone else a moment ago.");
+    this.name = "ConcurrentModificationError";
+  }
 }
 
 export type NewEvent = Omit<EventRecord, "id" | "sequence" | "recordedAt">;
@@ -157,7 +205,24 @@ const ENTRY_COLUMNS = `id, visit_id, station_id, queue_number, queue_label,
   queue_period, status, assigned_user_id, queued_at, called_at, started_at,
   completed_at, call_attempts, skipped, skip_reason, sequence`;
 
+/** What every visit read selects: the columns plus the version it was read at. */
+function selectVisit(alias?: string): string {
+  const prefix = alias ? `${alias}.` : "";
+  return `${VISIT_COLUMNS.split(",")
+    .map((c) => `${prefix}${c.trim()}`)
+    .join(", ")}, ${prefix}version`;
+}
+
 export class PostgresVisitRepository implements VisitRepository {
+  /**
+   * The version each loaded visit was read at.
+   *
+   * Kept beside the aggregate rather than on it, because a version is a fact
+   * about storage and the domain has no use for it. Weak, so a visit the
+   * request has finished with is collected with its entry.
+   */
+  readonly #versions = new WeakMap<Visit, number>();
+
   constructor(
     private readonly db: Database,
     private readonly deps: VisitDependencies,
@@ -173,7 +238,7 @@ export class PostgresVisitRepository implements VisitRepository {
    */
   async find(hospitalId: string, id: VisitId): Promise<Visit | null> {
     const [row] = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS.split(",").map((c) => `v.${c.trim()}`).join(", ")}
+      `SELECT ${selectVisit("v")}
        FROM visits v
        JOIN branches b ON b.id = v.branch_id
        WHERE v.id = $1 AND b.hospital_id = $2`,
@@ -188,7 +253,7 @@ export class PostgresVisitRepository implements VisitRepository {
     code: JourneyCode,
   ): Promise<Visit | null> {
     const [row] = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS} FROM visits
+      `SELECT ${selectVisit()} FROM visits
        WHERE branch_id = $1 AND journey_code = $2 AND closed_at IS NULL`,
       [branchId, code],
     );
@@ -198,9 +263,7 @@ export class PostgresVisitRepository implements VisitRepository {
 
   async openAtStation(hospitalId: string, stationId: StationId): Promise<Visit[]> {
     const rows = await this.db.query<VisitRow>(
-      `SELECT DISTINCT ${VISIT_COLUMNS.split(",")
-        .map((c) => `v.${c.trim()}`)
-        .join(", ")}
+      `SELECT DISTINCT ${selectVisit("v")}
        FROM visits v
        JOIN queue_entries q ON q.visit_id = v.id
        JOIN branches b ON b.id = v.branch_id
@@ -214,7 +277,7 @@ export class PostgresVisitRepository implements VisitRepository {
 
   async activeInBranch(hospitalId: string, branchId: BranchId): Promise<Visit[]> {
     const rows = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS.split(",").map((c) => `v.${c.trim()}`).join(", ")}
+      `SELECT ${selectVisit("v")}
        FROM visits v
        JOIN branches b ON b.id = v.branch_id
        WHERE v.branch_id = $1 AND b.hospital_id = $2 AND v.closed_at IS NULL
@@ -246,7 +309,7 @@ export class PostgresVisitRepository implements VisitRepository {
    */
   async findByTrackingToken(tokenHash: string): Promise<Visit | null> {
     const [row] = await this.db.query<VisitRow>(
-      `SELECT ${VISIT_COLUMNS} FROM visits
+      `SELECT ${selectVisit()} FROM visits
        WHERE tracking_token_hash = $1 AND closed_at IS NULL`,
       [tokenHash],
     );
@@ -260,6 +323,14 @@ export class PostgresVisitRepository implements VisitRepository {
    * They land together or not at all. A queue entry without its visit is a
    * patient in a queue nobody can look up; an event without its state change is
    * a lie in the audit trail.
+   *
+   * **The visit row is written first, and conditionally.** An update states the
+   * version this repository read; an insert refuses an id that already exists.
+   * Whichever applies, a lost race matches no row, the transaction is abandoned
+   * before a queue entry or an event is touched, and the caller is told. The
+   * UPDATE takes the row lock, so a concurrent writer waits for this one and
+   * then finds the version it read is gone — the second click loses, visibly,
+   * instead of erasing the first.
    */
   async save(
     visit: Visit,
@@ -267,41 +338,71 @@ export class PostgresVisitRepository implements VisitRepository {
     options: { trackingTokenHash?: string } = {},
   ): Promise<void> {
     const { visit: row, entries } = fromVisit(visit);
+    const known = this.#versions.get(visit);
 
-    await this.db.transaction(async (tx) => {
-      await tx.query(
-        `INSERT INTO visits (${VISIT_COLUMNS}, tracking_token_hash)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-         ON CONFLICT (id) DO UPDATE SET
-           -- COALESCE, so a later save that carries no token does not clear
-           -- the one issued at admission and printed on the patient's ticket.
-           tracking_token_hash =
-             COALESCE(EXCLUDED.tracking_token_hash, visits.tracking_token_hash),
-           status = EXCLUDED.status,
-           priority = EXCLUDED.priority,
-           current_queue_entry_id = EXCLUDED.current_queue_entry_id,
-           patient_name = EXCLUDED.patient_name,
-           hospital_number = EXCLUDED.hospital_number,
-           phone = EXCLUDED.phone,
-           completed_at = EXCLUDED.completed_at,
-           closed_at = EXCLUDED.closed_at`,
-        [
-          row.id,
-          row.branch_id,
-          row.workflow_id,
-          row.journey_code,
-          row.patient_name,
-          row.hospital_number,
-          row.phone,
-          row.status,
-          row.priority,
-          row.current_queue_entry_id,
-          row.created_at,
-          row.completed_at,
-          row.closed_at,
-          options.trackingTokenHash ?? null,
-        ],
-      );
+    const written = await this.db.transaction(async (tx) => {
+      let version: number;
+      if (known === undefined) {
+        const inserted = await tx.query<{ version: number }>(
+          `INSERT INTO visits (${VISIT_COLUMNS}, tracking_token_hash, version)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,0)
+           ON CONFLICT (id) DO NOTHING
+           RETURNING version`,
+          [
+            row.id,
+            row.branch_id,
+            row.workflow_id,
+            row.journey_code,
+            row.patient_name,
+            row.hospital_number,
+            row.phone,
+            row.status,
+            row.priority,
+            row.current_queue_entry_id,
+            row.created_at,
+            row.completed_at,
+            row.closed_at,
+            options.trackingTokenHash ?? null,
+          ],
+        );
+        if (inserted.length === 0) throw new ConcurrentModificationError(row.id);
+        version = inserted[0]!.version;
+      } else {
+        // Immutable facts — branch, workflow, Journey Code, admission time — are
+        // not in the SET list, so a later save cannot rewrite them.
+        const updated = await tx.query<{ version: number }>(
+          `UPDATE visits SET
+             -- COALESCE, so a save that carries no token does not clear the one
+             -- issued at admission and printed on the patient's ticket.
+             tracking_token_hash = COALESCE($2, tracking_token_hash),
+             status = $3,
+             priority = $4,
+             current_queue_entry_id = $5,
+             patient_name = $6,
+             hospital_number = $7,
+             phone = $8,
+             completed_at = $9,
+             closed_at = $10,
+             version = version + 1
+           WHERE id = $1 AND version = $11
+           RETURNING version`,
+          [
+            row.id,
+            options.trackingTokenHash ?? null,
+            row.status,
+            row.priority,
+            row.current_queue_entry_id,
+            row.patient_name,
+            row.hospital_number,
+            row.phone,
+            row.completed_at,
+            row.closed_at,
+            known,
+          ],
+        );
+        if (updated.length === 0) throw new ConcurrentModificationError(row.id);
+        version = updated[0]!.version;
+      }
 
       for (const entry of entries) {
         await tx.query(
@@ -340,7 +441,55 @@ export class PostgresVisitRepository implements VisitRepository {
       if (events.length > 0) {
         await appendEvents(tx, events);
       }
+      return version;
     });
+
+    this.#versions.set(visit, written);
+  }
+
+  async reissueTrackingToken(
+    hospitalId: string,
+    id: VisitId,
+    tokenHash: string,
+  ): Promise<boolean> {
+    const rows = await this.db.query<{ id: string }>(
+      `UPDATE visits v SET tracking_token_hash = $3
+       FROM branches b
+       WHERE v.id = $1 AND b.id = v.branch_id AND b.hospital_id = $2
+         AND v.closed_at IS NULL
+       RETURNING v.id`,
+      [id, hospitalId, tokenHash],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Finished visits past their grace period, and unfinished ones past the
+   * operating day, oldest first and bounded so one run cannot hold a long
+   * transaction over the whole table.
+   */
+  async awaitingClosure(
+    criteria: ClosureCriteria,
+  ): Promise<Array<{ hospitalId: string; visit: Visit }>> {
+    const rows = await this.db.query<VisitRow & { owner_hospital_id: string }>(
+      `SELECT ${selectVisit("v")}, b.hospital_id AS owner_hospital_id
+       FROM visits v
+       JOIN branches b ON b.id = v.branch_id
+       WHERE v.closed_at IS NULL
+         AND (
+           (v.status IN ('completed', 'cancelled')
+              AND COALESCE(v.completed_at, v.created_at) < $1)
+           OR (v.status NOT IN ('completed', 'cancelled') AND v.created_at < $2)
+         )
+       ORDER BY v.created_at
+       LIMIT $3`,
+      [criteria.finishedBefore, criteria.admittedBefore, criteria.limit],
+    );
+    const visits = await this.#hydrate(rows);
+    return visits.map((visit, index) => ({
+      hospitalId: rows[index]!.owner_hospital_id,
+      visit,
+    }));
   }
 
   async #hydrate(rows: readonly VisitRow[]): Promise<Visit[]> {
@@ -361,9 +510,11 @@ export class PostgresVisitRepository implements VisitRepository {
       byVisit.set(entry.visit_id, list);
     }
 
-    return rows.map((row) =>
-      toVisit(row, byVisit.get(row.id) ?? [], this.deps),
-    );
+    return rows.map((row) => {
+      const visit = toVisit(row, byVisit.get(row.id) ?? [], this.deps);
+      this.#versions.set(visit, typeof row.version === "number" ? row.version : 0);
+      return visit;
+    });
   }
 }
 
@@ -573,6 +724,7 @@ export class PostgresSessionRepository implements SessionRepository {
 
 const ACCOUNT_COLUMNS = `u.id, u.hospital_id, u.role_id, u.display_name,
   u.username, u.provider_id, u.password_hash, u.password_salt, u.enabled,
+  u.password_change_required,
   r.key AS role_key, r.permissions,
   ARRAY(SELECT ub.branch_id::text FROM user_branches ub WHERE ub.user_id = u.id)
     AS branch_ids`;

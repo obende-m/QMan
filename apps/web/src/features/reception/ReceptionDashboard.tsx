@@ -2,8 +2,6 @@ import { useMemo, useState } from "react";
 import {
   Activity,
   FlaskConical,
-  ListFilter,
-  MoreVertical,
   Pill,
   Plus,
   Printer,
@@ -21,7 +19,10 @@ import {
   priorityChip,
   visitStatusChip,
 } from "../../components/ui/StatusChip.js";
-import { slaFor, stationName, stationRoom } from "../../data/clinic-projections.js";
+import { identityWithheld, patientLabel, stationName, stationRoom } from "../../data/clinic-projections.js";
+import { useAuth } from "../../data/useAuth.js";
+import { AdmissionDialog } from "./AdmissionDialog.js";
+import { VisitRowActions } from "./VisitRowActions.js";
 import { useConfig } from "../../data/useConfig.js";
 import { TicketPrintDialog } from "../printing/TicketPrintDialog.js";
 import { useClinic, useNow } from "../../data/useClinic.js";
@@ -52,10 +53,28 @@ export function ReceptionDashboard({
   const config = useConfig();
   const now = useNow(30_000);
   const version = clinic.getVersion();
-  const [printing, setPrinting] = useState<string | null>(null);
+  const auth = useAuth();
+  const [admitting, setAdmitting] = useState(false);
+  const [printing, setPrinting] = useState<{ visitId: string; token: string } | null>(null);
+  const [printError, setPrintError] = useState<string | null>(null);
   const printingVisit = printing
-    ? clinic.visits.find((visit) => visit.id === printing)
+    ? clinic.visits.find((visit) => visit.id === printing.visitId)
     : undefined;
+
+  /**
+   * A reprint mints a new tracking token. Only its hash is kept, so the one
+   * printed at admission cannot be recovered — and a reprint for a lost
+   * ticket should retire the old QR anyway.
+   */
+  const reprint = async (visitId: string) => {
+    setPrintError(null);
+    const result = await clinic.reissueTrackingToken(visitId as never);
+    if (!result.ok || !result.trackingToken) {
+      setPrintError(result.ok ? "The ticket could not be prepared." : result.message);
+      return;
+    }
+    setPrinting({ visitId, token: result.trackingToken });
+  };
 
   const stations = useMemo(
     () =>
@@ -93,10 +112,17 @@ export function ReceptionDashboard({
         ? Math.round(waits.reduce((sum, v) => sum + v, 0) / waits.length)
         : 0;
 
+    // The target is the configured SLA, averaged over public stations, rather
+    // than a number written into this screen.
+    const targets = config.publicStations().map((s) => s.sla.targetWaitMillis / 60_000);
+    const targetWait =
+      targets.length > 0 ? Math.round(targets.reduce((a, b) => a + b, 0) / targets.length) : null;
+
     return {
       totalVisits: clinic.visits.length,
       averageWait,
-      targetWait: 15,
+      measured: waits.length > 0,
+      targetWait,
     };
   }, [clinic, version]);
 
@@ -120,37 +146,30 @@ export function ReceptionDashboard({
             Manage incoming patient flow and queue assignments.
           </p>
         </div>
-        <Button size="lg" icon={<Plus className="size-5" />}>
-          Create Visit
-        </Button>
+        {auth.can("visit.create") && (
+          <Button size="lg" icon={<Plus className="size-5" />} onClick={() => setAdmitting(true)}>
+            Create Visit
+          </Button>
+        )}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-1">
-          <StatCard
-            label="Total visits today"
-            value={metrics.totalVisits}
-            delta={{ value: 12, caption: "vs yesterday", goodWhen: "up" }}
-          />
+          {/* No comparison with yesterday: the server does not yet report one,
+              and an invented trend is worse than none. */}
+          <StatCard label="Open visits" value={metrics.totalVisits} />
           <StatCard
             label="Avg. wait time"
-            value={metrics.averageWait}
-            unit="min"
-            {...(metrics.averageWait > metrics.targetWait
+            value={metrics.measured ? metrics.averageWait : "—"}
+            {...(metrics.measured ? { unit: "min" } : {})}
+            {...(metrics.measured && metrics.targetWait !== null && metrics.averageWait > metrics.targetWait
               ? { alert: `Above target (${metrics.targetWait}m)` }
-              : { delta: { value: -8, caption: "vs yesterday", goodWhen: "down" as const } })}
+              : {})}
           />
         </div>
 
         <Card>
-          <CardHeader
-            title="Live Queue Status"
-            action={
-              <Button variant="ghost" size="sm" className="text-primary">
-                View full queues →
-              </Button>
-            }
-          />
+          <CardHeader title="Live Queue Status" />
           <div className="grid gap-4 px-gutter pb-gutter sm:grid-cols-2 xl:grid-cols-3">
             {stations.map(({ station, worklist }: { station: StationConfig; worklist: StationWorklist }) => (
               <StationLoadCard
@@ -176,22 +195,17 @@ export function ReceptionDashboard({
         <CardHeader
           title="Recent Visits"
           subtitle="Most recent arrivals. Urgent patients appear above, regardless of arrival time."
-          action={
-            <>
-              <Button variant="ghost" size="sm" aria-label="Filter visits">
-                <ListFilter className="size-4" />
-              </Button>
-              <Button variant="ghost" size="sm" aria-label="More options">
-                <MoreVertical className="size-4" />
-              </Button>
-            </>
-          }
         />
+        {printError && (
+          <p role="alert" className="mx-gutter mb-3 rounded-md border border-error/40 bg-error-container/40 p-3 text-body-sm">
+            {printError}
+          </p>
+        )}
 
         {/* Wide tables scroll inside their own container so the page body never
             scrolls horizontally on a tablet at a reception desk. */}
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] border-collapse text-left">
+          <table className="w-full min-w-[880px] border-collapse text-left">
             <thead>
               <tr className="border-y border-outline-variant bg-surface-container-low">
                 {["Journey Code", "Patient", "Arrived", "Status", "Current Stage", ""].map(
@@ -222,8 +236,14 @@ export function ReceptionDashboard({
                     </td>
                     <td className="px-gutter py-4">
                       <div className="flex items-center gap-2">
-                        <span className="text-body-md font-semibold text-on-surface">
-                          {visit.patient.name}
+                        <span
+                          className={
+                            identityWithheld(visit)
+                              ? "font-mono text-body-md font-semibold text-on-surface-variant"
+                              : "text-body-md font-semibold text-on-surface"
+                          }
+                        >
+                          {patientLabel(visit)}
                         </span>
                         {priority && (
                           <StatusChip tone={priority.tone} label={priority.label} />
@@ -257,15 +277,24 @@ export function ReceptionDashboard({
                       </span>
                     </td>
                     <td className="px-gutter py-4 text-right">
+                      <div className="flex flex-col items-end gap-2">
+                      <VisitRowActions
+                        visit={visit}
+                        clinic={clinic}
+                        canEscalate={auth.can("visit.escalate")}
+                        canCancel={auth.can("visit.cancel")}
+                      />
                       <Button
                         variant="secondary"
                         size="sm"
                         icon={<Printer className="size-4" />}
-                        onClick={() => setPrinting(visit.id)}
+                        onClick={() => void reprint(visit.id)}
+                        disabled={!auth.can("visit.create") || visit.currentEntry === undefined}
                         aria-label={`Print ticket for ${visit.journeyCode}`}
                       >
                         Ticket
                       </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -285,7 +314,8 @@ export function ReceptionDashboard({
             journeyCode: printingVisit.journeyCode,
             patientName: printingVisit.patient.name,
             hospitalName: config.config.profile.name,
-            branchName: config.config.branches[0]?.name ?? "",
+            branchName:
+              config.config.branches.find((b) => b.id === printingVisit.branchId)?.name ?? "",
             stationName: printingVisit.currentStationId
               ? stationName(config.config, printingVisit.currentStationId)
               : "Reception",
@@ -296,8 +326,18 @@ export function ReceptionDashboard({
             branchCount: config.config.branches.length,
             issuedAt: printingVisit.createdAt,
             logoUrl: null,
+            trackingToken: printing?.token ?? null,
           }}
           onClose={() => setPrinting(null)}
+        />
+      )}
+
+      {admitting && (
+        <AdmissionDialog
+          clinic={clinic}
+          config={config}
+          canSetPriority={auth.can("visit.escalate")}
+          onClose={() => setAdmitting(false)}
         />
       )}
     </div>

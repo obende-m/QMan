@@ -193,6 +193,22 @@ export function primeConfigurationRead(
     .willReturn([{ settings: config.defaults }]);
 }
 
+/**
+ * The same read, as a write sees it: after the organization row is locked.
+ *
+ * Configuration writes take the lock first, so its (ignored) row is the first
+ * result a write consumes.
+ */
+export function primeConfigurationWrite(db: FakeDatabase, config: HospitalConfiguration): void {
+  db.willReturn([{ id: HOSPITAL }]);
+  primeConfigurationRead(db, config);
+}
+
+export function primeRolesWrite(db: FakeDatabase, roles: readonly RoleConfig[]): void {
+  db.willReturn([{ id: HOSPITAL }]);
+  primeRolesRead(db, roles);
+}
+
 export function primeRolesRead(db: FakeDatabase, roles: readonly RoleConfig[]): void {
   db.willReturn(
     roles.map((role) => ({

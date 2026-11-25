@@ -1,3 +1,4 @@
+import { patientLabel } from "../../data/clinic-projections.js";
 import { ShieldCheck, TriangleAlert } from "lucide-react";
 import type { Priority } from "@qman/domain";
 import { Card } from "../../components/ui/Card.js";
@@ -116,7 +117,7 @@ function PriorityRow({
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-body-md font-semibold text-on-surface">
-              {visit.patient.name}
+              {patientLabel(visit)}
             </span>
             {chip && <StatusChip tone={chip.tone} label={chip.label} />}
           </div>

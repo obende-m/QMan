@@ -15,6 +15,18 @@ export type Priority = (typeof PRIORITIES)[number];
 
 export const DEFAULT_PRIORITY: Priority = "normal";
 
+/**
+ * Narrows untrusted input to a priority.
+ *
+ * Priority arrives over the wire as a string, and a value outside the set is
+ * not a lower priority — it is a visit the mapper cannot read back. One such
+ * row used to make every read of its branch fail, so the check belongs at every
+ * boundary a priority crosses: here, the API, and a CHECK constraint.
+ */
+export function isPriority(value: unknown): value is Priority {
+  return typeof value === "string" && (PRIORITIES as readonly string[]).includes(value);
+}
+
 /** Higher weight is served first. */
 export const DEFAULT_PRIORITY_WEIGHTS: Readonly<Record<Priority, number>> =
   Object.freeze({

@@ -303,9 +303,12 @@ export class ClinicStore {
     hospitalNumber?: string;
     phone?: string;
     priority?: string;
-  }): Promise<ActionResult & { trackingToken?: string; visit?: Visit }> {
+    workflowId?: string;
+  }, idempotencyKey?: string): Promise<ActionResult & { trackingToken?: string; visit?: Visit }> {
     try {
-      const response = await this.api.admit(patient, this.#key());
+      // The caller may supply the key, so a form resubmitted after a lost
+      // response is recognised by the server as the same admission.
+      const response = await this.api.admit(patient, idempotencyKey ?? this.#key());
       const visit = visitFromWire(response.visit.state, this.deps);
       this.#replace(visit);
       return { ok: true, trackingToken: response.trackingToken, visit };
@@ -333,6 +336,30 @@ export class ClinicStore {
     return this.#act((key) => this.api.call(next.visitId, key));
   }
 
+  /** A fresh tracking token for reprinting a ticket; the previous QR stops working. */
+  async reissueTrackingToken(visitId: VisitId): Promise<ActionResult & { trackingToken?: string }> {
+    try {
+      const { trackingToken } = await this.api.reissueTrackingToken(visitId);
+      return { ok: true, trackingToken };
+    } catch (error) {
+      return fail(messageFor(error));
+    }
+  }
+
+  changePriority(visitId: VisitId, priority: string): Promise<ActionResult> {
+    return this.#act((key) => this.api.changePriority(visitId, priority, key));
+  }
+
+  /**
+   * Calls one particular waiting patient, out of queue order.
+   *
+   * For the urgent patient a station takes ahead of the line. Calling a
+   * patient already called is refused by the server; that is a recall.
+   */
+  call(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
+    return this.#act((key) => this.api.call(visitId, key));
+  }
+
   recall(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
     return this.#act((key) => this.api.recall(visitId, key));
   }
@@ -349,8 +376,8 @@ export class ClinicStore {
     return this.#act((key) => this.api.complete(visitId, key));
   }
 
-  cancel(visitId: VisitId, _userId: UserId): Promise<ActionResult> {
-    return this.#act((key) => this.api.cancel(visitId, key));
+  cancel(visitId: VisitId, _userId: UserId, reason?: string): Promise<ActionResult> {
+    return this.#act((key) => this.api.cancel(visitId, key, reason));
   }
 
   /**

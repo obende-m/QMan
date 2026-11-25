@@ -470,6 +470,9 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       json: async () => body,
     }) as unknown as Response;
 
+  const identity = () => ({ includeIdentity: permissions.includes("visit.view_identity") });
+  const admissions = new Map<string, Visit>();
+
   globalThis.fetch = (async (input: string, init: RequestInit = {}) => {
     const url = String(input);
     const method = (init.method ?? "GET").toUpperCase();
@@ -496,8 +499,43 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       return respond(200, { events: published });
     }
 
+    /*
+     * Admission, as the server does it: the aggregate creates the visit and
+     * queues it at the workflow's first station. A repeated idempotency key
+     * returns the same visit, which is the property the form depends on.
+     */
+    if (url.endsWith("/api/v1/visits") && method === "POST") {
+      const key = (init.headers as Record<string, string> | undefined)?.["Idempotency-Key"] ?? "";
+      const existing = admissions.get(key);
+      if (existing !== undefined) {
+        return respond(201, { visit: { state: visitToWire(existing, identity()) }, trackingToken: `token-${key}-again` });
+      }
+      const input = (body ?? {}) as { patientName?: string; workflowId?: string; priority?: string };
+      if (!input.patientName) return respond(400, { error: "A visit needs a patient name." });
+      const workflow =
+        current.workflows.find((w) => w.id === input.workflowId) ??
+        current.workflows.find((w) => w.isDefault) ??
+        current.workflows[0]!;
+      const first = [...workflow.stages].sort((a, b) => a.sequence - b.sequence)[0]!;
+      const visit = buildVisit(
+        { name: input.patientName, path: [first.stationId], ...(input.priority ? { priority: input.priority as never } : {}), arrivedMinutesAgo: 0 },
+        new Date(),
+      );
+      visits.unshift(visit);
+      if (key !== "") admissions.set(key, visit);
+      publish(visit, "visit.queued", first.stationId);
+      return respond(201, { visit: { state: visitToWire(visit, identity()) }, trackingToken: `token-${visits.length}` });
+    }
+
+    if (url.match(/\/api\/v1\/visits\/[^/]+\/tracking-token$/) && method === "POST") {
+      return respond(200, { trackingToken: "reissued-token" });
+    }
+
     if (url.includes("/visits") && method === "GET") {
-      return respond(200, { visits: visits.map((visit) => ({ state: visitToWire(visit) })) });
+      // Identity follows the permission, exactly as the server decides it.
+      return respond(200, {
+        visits: visits.map((visit) => ({ state: visitToWire(visit, identity()) })),
+      });
     }
 
     /**
@@ -514,11 +552,16 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
       if (visit === undefined) return respond(404, { error: "No such visit." });
 
       try {
-        if (name === "call" || name === "recall") visit.call(USER_ID, { actorId: USER_ID });
+        if (name === "call") visit.call(USER_ID, { actorId: USER_ID });
+        else if (name === "recall") visit.recall(USER_ID, { actorId: USER_ID });
         else if (name === "start") visit.startService(USER_ID, { actorId: USER_ID });
         else if (name === "skip") visit.skip({ actorId: USER_ID });
         else if (name === "complete") visit.complete({ actorId: USER_ID });
-        else if (name === "cancel") visit.cancel({ actorId: USER_ID });
+        else if (name === "cancel") {
+          visit.cancel({ actorId: USER_ID, reason: (body as { reason?: string } | undefined)?.reason ?? null });
+        } else if (name === "priority") {
+          visit.changePriority((body as { priority: never }).priority, { actorId: USER_ID });
+        }
         else if (name === "route") {
           const to = (body as { stationId: string }).stationId as StationId;
           // The destination station issues the ticket, in its own format —
@@ -545,7 +588,7 @@ export async function createFixture(options: FixtureOptions = {}): Promise<Fixtu
           (domainEvent.payload as { stationId?: StationId }).stationId ?? null,
         );
       }
-      return respond(200, { visit: { state: visitToWire(visit) } });
+      return respond(200, { visit: { state: visitToWire(visit, identity()) } });
     }
 
     // Configuration writes echo the merged configuration, which is what the

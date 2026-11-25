@@ -72,6 +72,16 @@ export interface ChangeDescription {
 
 export interface ConfigurationChange {
   /**
+   * Whether the entity this change addresses exists, checked against the
+   * configuration as loaded under the lock.
+   *
+   * A PATCH or DELETE naming an id that is not there used to apply a no-op,
+   * pass validation and commit an audit entry for a change that never
+   * happened. Answering 404 instead keeps the audit log a record of things
+   * that occurred.
+   */
+  readonly target?: (current: HospitalConfiguration) => boolean;
+  /**
    * Checked before anything is applied, inside the transaction.
    *
    * For deletions this is where referential use is counted. The domain cannot
@@ -104,7 +114,7 @@ export type ChangeResult =
       /** Non-blocking problems. The change was saved; these are worth showing. */
       readonly warnings: readonly ConfigProblem[];
     }
-  | { readonly ok: false; readonly problems: readonly ConfigProblem[] };
+  | { readonly ok: false; readonly problems: readonly ConfigProblem[]; readonly status?: number };
 
 export interface ConfigurationServiceDependencies {
   readonly db: Database;
@@ -124,6 +134,7 @@ export class ConfigurationService {
     void writer;
 
     return db.transaction(async (tx) => {
+      await lockOrganization(tx, context.hospitalId);
       // Read inside the transaction, so the configuration validated against is
       // the one being written over.
       const repository = new PostgresConfigurationRepository(tx);
@@ -140,6 +151,10 @@ export class ConfigurationService {
             },
           ],
         };
+      }
+
+      if (change.target && !change.target(before)) {
+        return { ok: false, status: 404, problems: [] };
       }
 
       const blocked = (await change.precondition?.(tx)) ?? [];
@@ -177,10 +192,15 @@ export class ConfigurationService {
     const { db, now } = this.#deps;
 
     return db.transaction(async (tx) => {
+      await lockOrganization(tx, context.hospitalId);
       const repository = new PostgresConfigurationRepository(tx);
       const before = await repository.loadRoles(context.hospitalId);
 
-      const blocked = (await change.precondition?.(tx)) ?? [];
+      if (change.target && !change.target(before)) {
+        return { ok: false, status: 404, problems: [] };
+      }
+
+      const blocked = (await change.precondition?.(tx, before)) ?? [];
       if (blocked.length > 0) return { ok: false, problems: blocked };
 
       const after = change.apply(before);
@@ -204,6 +224,26 @@ export class ConfigurationService {
 }
 
 /**
+ * Serialises configuration writes within one organization.
+ *
+ * Every change validates the *whole* configuration and then writes one
+ * entity. At READ COMMITTED, two administrators saving at the same moment each
+ * validated against the configuration before the other's change — so deleting
+ * the last station a workflow uses and adding that station to a board could
+ * both pass, and together commit a configuration neither would have been
+ * allowed to make. Locking the organization's row first makes the second wait
+ * for the first and then validate against what it actually committed.
+ *
+ * The hospital row, rather than an advisory lock: it exists for every tenant,
+ * it is released at COMMIT or ROLLBACK without anyone remembering to, and it is
+ * stock SQL. Reads do not take it, so dashboards are never held up by an
+ * administrator saving.
+ */
+export async function lockOrganization(tx: SqlExecutor, hospitalId: string): Promise<void> {
+  await tx.query(`SELECT id FROM hospitals WHERE id = $1 FOR UPDATE`, [hospitalId]);
+}
+
+/**
  * A change to the hospital's roles.
  *
  * Roles are not part of `HospitalConfiguration` and are not validated by
@@ -218,7 +258,12 @@ export class ConfigurationService {
  * admin.users" is a question about the set, not about the role.
  */
 export interface RoleChange {
-  readonly precondition?: (tx: SqlExecutor) => Promise<readonly ConfigProblem[]>;
+  /** As for configuration changes: the role addressed must exist. */
+  readonly target?: (current: readonly RoleConfig[]) => boolean;
+  readonly precondition?: (
+    tx: SqlExecutor,
+    current: readonly RoleConfig[],
+  ) => Promise<readonly ConfigProblem[]>;
   readonly apply: (current: readonly RoleConfig[]) => RoleConfig[];
   readonly persist: (tx: SqlExecutor, next: readonly RoleConfig[], at: Date) => Promise<void>;
   readonly describe: (
@@ -229,7 +274,7 @@ export interface RoleChange {
 
 export type RoleChangeResult =
   | { readonly ok: true; readonly roles: readonly RoleConfig[] }
-  | { readonly ok: false; readonly problems: readonly ConfigProblem[] };
+  | { readonly ok: false; readonly problems: readonly ConfigProblem[]; readonly status?: number };
 
 /**
  * Correlated by session, not by Journey Code.

@@ -48,6 +48,13 @@ import { EventStream, formatHeartbeat, HEARTBEAT_MILLIS } from "./stream.js";
 import { registerPublicRoutes, type PublicRouteDependencies } from "./public-routes.js";
 import { registerConfigRoutes, type ConfigRouteDependencies } from "./config-routes.js";
 import { registerConfigWriteRoutes, type ConfigWriteDependencies } from "./config-write-routes.js";
+import {
+
+  registerAdministrationRoutes,
+  type AdministrationRouteDependencies,
+} from "./admin-routes.js";
+import { categoryOf } from "@qman/domain";
+import type { EventRepository, NewEvent } from "@qman/persistence";
 import { V1 } from "./version.js";
 
 export { SESSION_COOKIE };
@@ -88,12 +95,34 @@ export interface ServerOptions {
   readonly publicSurfaces?: Omit<PublicRouteDependencies, "logger" | "now">;
   /** Business routes are registered only when their repositories exist. */
   readonly queue?: Omit<QueueRouteDependencies, "guards" | "logger" | "stream">;
+  /**
+   * Which proxies' `X-Forwarded-For` to believe. See `parseTrustProxy`.
+   * Defaults to none, so `request.ip` is the socket's address.
+   */
+  readonly trustProxy?: false | number | readonly string[];
+  /**
+   * Checks the database answers, for the health endpoint. Absent in suites
+   * with no database; every deployment supplies one.
+   */
+  readonly checkDatabase?: () => Promise<void>;
+  /** User and session administration. Registered only when its service exists. */
+  readonly administration?: Omit<AdministrationRouteDependencies, "guards" | "logger" | "now">;
+  /**
+   * Where sign-in, sign-out and failed sign-in records are written. Every
+   * deployment supplies it; the security log is not optional.
+   */
+  readonly securityEvents?: EventRepository;
 }
 
 declare module "fastify" {
   interface FastifyRequest {
     requestId: string;
-    authenticated?: { user: AuthenticatedUser; session: Session; hospitalId: string };
+    authenticated?: {
+      user: AuthenticatedUser;
+      session: Session;
+      hospitalId: string;
+      passwordChangeRequired?: boolean;
+    };
     /**
      * Set only by the platform guard, and never by the organization one. The
      * two live side by side on the request and neither reads the other.
@@ -187,9 +216,38 @@ export function buildServer(options: ServerOptions): FastifyInstance {
   const now = options.now ?? (() => new Date());
   const rateLimiter = options.rateLimiter ?? createRateLimiter();
   const stream = options.stream ?? new EventStream();
-  const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 64 * 1024,
+    trustProxy:
+      options.trustProxy === undefined || options.trustProxy === false
+        ? false
+        : typeof options.trustProxy === "number"
+          ? options.trustProxy
+          : [...options.trustProxy],
+  });
 
   const guards: GuardDependencies = { auth: options.auth, logger };
+
+  /**
+   * Writes one security record, and never fails the request for it.
+   *
+   * A sign-in that succeeded must not be reported as a failure because the
+   * audit write did not land; the failure is logged loudly instead, where
+   * monitoring will see it.
+   */
+  const recordSecurity = async (event: NewEvent): Promise<void> => {
+    if (options.securityEvents === undefined) return;
+    try {
+      await options.securityEvents.append([event]);
+    } catch (error) {
+      logger.error("security record not written", {
+        type: event.type,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
 
   /**
    * One identifier per request, minted here or adopted from a proxy that
@@ -400,6 +458,23 @@ export function buildServer(options: ServerOptions): FastifyInstance {
         username,
         reason: result.failure.reason,
       });
+      await recordSecurity({
+        hospitalId: hospitalId as NewEvent["hospitalId"],
+        branchId: null as unknown as NewEvent["branchId"],
+        category: categoryOf("auth.sign_in_failed"),
+        type: result.failure.reason === "account_locked" ? "auth.account_locked" : "auth.sign_in_failed",
+        visitId: null,
+        correlationId: null,
+        actorId: null,
+        occurredAt: now(),
+        // The username tried, which is what an investigation of a guessing
+        // attack follows. Never the password.
+        payload: { username: username.slice(0, 64), reason: result.failure.reason },
+        summary:
+          result.failure.reason === "account_locked"
+            ? `Sign-in refused for ${username.slice(0, 64)}: account locked`
+            : `Failed sign-in for ${username.slice(0, 64)}`,
+      });
       const status = result.failure.reason === "account_locked" ? 429 : 401;
       return reply.status(status).send({
         error: result.failure.message,
@@ -422,12 +497,50 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     // token captured from a shared workstation stay valid for the next person.
     const csrf = issueCsrfToken();
     startSession(reply, result.token, csrf, options.secureCookies);
-    return reply.status(200).send({ user: describeUser(result.user, now()), csrfToken: csrf });
+
+    const signedInAt = now();
+    await recordSecurity({
+      hospitalId: hospitalId as NewEvent["hospitalId"],
+      branchId: null as unknown as NewEvent["branchId"],
+      category: categoryOf("auth.signed_in"),
+      type: "auth.signed_in",
+      visitId: null,
+      correlationId: result.session.id,
+      actorId: result.user.account.id,
+      occurredAt: signedInAt,
+      payload: { device: result.session.device, branchId: result.session.branchId },
+      summary: `${result.user.account.username} signed in on ${result.session.device || "an unknown device"}`,
+    });
+    await options.administration?.administration.recordSignIn(result.user.account.id, signedInAt);
+
+    return reply.status(200).send({
+      user: describeUser(result.user, now(), result.passwordChangeRequired),
+      csrfToken: csrf,
+    });
   });
 
   app.post(`${V1}/auth/logout`, async (request, reply) => {
     const token = readSessionToken(request);
-    if (token !== null) await options.auth.signOut(token);
+    if (token !== null) {
+      // Resolved first so the record can say who signed out. A token that no
+      // longer resolves has nothing to record.
+      const resolved = await options.auth.resolve(token);
+      await options.auth.signOut(token);
+      if (resolved !== null) {
+        await recordSecurity({
+          hospitalId: resolved.hospitalId as NewEvent["hospitalId"],
+          branchId: null as unknown as NewEvent["branchId"],
+          category: categoryOf("auth.signed_out"),
+          type: "auth.signed_out",
+          visitId: null,
+          correlationId: resolved.session.id,
+          actorId: resolved.user.account.id,
+          occurredAt: now(),
+          payload: {},
+          summary: `${resolved.user.account.username} signed out`,
+        });
+      }
+    }
     endSessionCookies(reply, options.secureCookies);
     // 204 whether or not a session was found. Reporting the difference would
     // tell an unauthenticated caller whether a token it holds is still live.
@@ -438,21 +551,29 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     `${V1}/auth/me`,
     { preHandler: requireSignedIn(guards) },
     async (request, reply) => {
-      return reply.status(200).send({ user: describeUser(request.authenticated!.user, now()) });
+      const authenticated = request.authenticated!;
+      return reply.status(200).send({
+        user: describeUser(authenticated.user, now(), authenticated.passwordChangeRequired === true),
+      });
     },
   );
 
-  /**
-   * Present so authorization is exercised by the suite from the moment it
-   * exists, rather than first being tried when the queue endpoints land.
-   */
-  app.get(
-    `${V1}/sessions`,
-    { preHandler: requirePermission(guards, "admin.users") },
-    async (_request, reply) => {
-      return reply.status(200).send({ sessions: [] });
-    },
-  );
+  if (options.administration) {
+    registerAdministrationRoutes(app, { ...options.administration, guards, logger, now });
+  } else {
+    /**
+     * Without administration configured, the session list still exists and is
+     * still guarded, so authorization is exercised by suites that build a
+     * server without it.
+     */
+    app.get(
+      `${V1}/sessions`,
+      { preHandler: requirePermission(guards, "admin.users") },
+      async (_request, reply) => {
+        return reply.status(200).send({ sessions: [] });
+      },
+    );
+  }
 
   /**
    * The event stream.
@@ -553,8 +674,45 @@ export function buildServer(options: ServerOptions): FastifyInstance {
     });
   }
 
-  app.get("/api/health", async (_request, reply) => {
+  /**
+   * Liveness: the process is up and serving HTTP. Nothing else.
+   *
+   * For a supervisor deciding whether to restart the process, which a database
+   * outage should not cause — a restart cannot fix the database.
+   */
+  app.get("/api/live", async (_request, reply) => {
     return reply.status(200).send({ status: "ok", at: now().toISOString() });
+  });
+
+  /**
+   * Health: whether this instance can do its job, which means reaching the
+   * database. Used by load balancers to stop routing to an instance that would
+   * answer every request with a 500.
+   *
+   * Bounded by a timeout, so a database that hangs rather than refusing is
+   * reported as down instead of holding the probe open. The error is logged
+   * and not returned: it names hosts and ports.
+   */
+  app.get("/api/health", async (request, reply) => {
+    if (options.checkDatabase === undefined) {
+      return reply.status(200).send({ status: "ok", database: "not_configured", at: now().toISOString() });
+    }
+    try {
+      await Promise.race([
+        options.checkDatabase(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 3_000)),
+      ]);
+      return reply.status(200).send({ status: "ok", database: "ok", at: now().toISOString() });
+    } catch (error) {
+      logger.error("health check failed", {
+        requestId: request.requestId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return reply
+        .status(503)
+        .header("Cache-Control", "no-store")
+        .send({ status: "unavailable", database: "unreachable", at: now().toISOString() });
+    }
   });
 
   return app;
@@ -567,8 +725,13 @@ export function buildServer(options: ServerOptions): FastifyInstance {
  * added to `users` later — a personal phone number, a national identifier —
  * does not silently start appearing in a response body.
  */
-function describeUser(user: AuthenticatedUser, at: Date): Record<string, unknown> {
+function describeUser(
+  user: AuthenticatedUser,
+  at: Date,
+  passwordChangeRequired = false,
+): Record<string, unknown> {
   return {
+    passwordChangeRequired,
     id: user.account.id,
     displayName: user.account.displayName,
     username: user.account.username,

@@ -43,10 +43,31 @@ export class VisitsApi {
   }
 
   admit(
-    patient: { patientName: string; hospitalNumber?: string; phone?: string; priority?: string },
+    patient: {
+      patientName: string;
+      hospitalNumber?: string;
+      phone?: string;
+      priority?: string;
+      workflowId?: string;
+    },
     idempotencyKey: string,
   ): Promise<AdmissionResponse> {
     return this.client.post<AdmissionResponse>("/api/v1/visits", patient, idempotencyKey);
+  }
+
+  /** Mints a new tracking token for a reprint. The old QR stops working. */
+  reissueTrackingToken(visitId: string): Promise<{ trackingToken: string }> {
+    return this.client.post<{ trackingToken: string }>(
+      `/api/v1/visits/${encodeURIComponent(visitId)}/tracking-token`,
+    );
+  }
+
+  changePriority(visitId: string, priority: string, key: string): Promise<VisitResponse> {
+    return this.client.post<VisitResponse>(
+      `/api/v1/visits/${encodeURIComponent(visitId)}/priority`,
+      { priority },
+      key,
+    );
   }
 
   call(visitId: string, key: string): Promise<VisitResponse> {
@@ -69,8 +90,13 @@ export class VisitsApi {
     return this.act(visitId, "complete", key);
   }
 
-  cancel(visitId: string, key: string): Promise<VisitResponse> {
-    return this.act(visitId, "cancel", key);
+  cancel(visitId: string, key: string, reason?: string): Promise<VisitResponse> {
+    if (reason === undefined) return this.act(visitId, "cancel", key);
+    return this.client.post<VisitResponse>(
+      `/api/v1/visits/${encodeURIComponent(visitId)}/cancel`,
+      { reason },
+      key,
+    );
   }
 
   /**

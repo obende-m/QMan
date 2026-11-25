@@ -11,6 +11,8 @@ import { visitFromWire, visitToWire } from "./visit-wire.js";
 import { BranchId, StationId, UserId, WorkflowId } from "../shared/ids.js";
 import { parseJourneyCode } from "../journey/journey-code.js";
 
+const IDENTITY = { includeIdentity: true } as const;
+
 let counter = 0;
 const deps = {
   clock: { now: () => new Date("2026-03-09T09:00:00Z") },
@@ -38,7 +40,7 @@ function admitted(): Visit {
 describe("visit wire format", () => {
   it("survives a round trip with its state intact", () => {
     const original = admitted();
-    const restored = visitFromWire(visitToWire(original), deps);
+    const restored = visitFromWire(visitToWire(original, IDENTITY), deps);
 
     expect(restored.id).toBe(original.id);
     expect(restored.journeyCode).toBe(original.journeyCode);
@@ -49,13 +51,13 @@ describe("visit wire format", () => {
   });
 
   it("restores instants as dates, not strings", () => {
-    const restored = visitFromWire(visitToWire(admitted()), deps);
+    const restored = visitFromWire(visitToWire(admitted(), IDENTITY), deps);
     expect(restored.createdAt).toBeInstanceOf(Date);
     expect(restored.currentEntry?.queuedAt).toBeInstanceOf(Date);
   });
 
   it("keeps the ticket exactly as it was issued", () => {
-    const restored = visitFromWire(visitToWire(admitted()), deps);
+    const restored = visitFromWire(visitToWire(admitted(), IDENTITY), deps);
     expect(restored.currentEntry?.queueLabel).toBe("A-023");
     expect(restored.currentEntry?.queueNumber).toBe(23);
     // The period is what lets a series be rebuilt after a restore.
@@ -70,14 +72,14 @@ describe("visit wire format", () => {
     const original = admitted();
     original.pullEvents();
 
-    const restored = visitFromWire(visitToWire(original), deps);
+    const restored = visitFromWire(visitToWire(original, IDENTITY), deps);
     expect(restored.hasPendingEvents).toBe(false);
     expect(restored.pullEvents()).toEqual([]);
   });
 
   /** A rebuilt visit is a working aggregate, not a frozen snapshot. */
   it("can be acted on after being rebuilt", () => {
-    const restored = visitFromWire(visitToWire(admitted()), deps);
+    const restored = visitFromWire(visitToWire(admitted(), IDENTITY), deps);
     restored.call(UserId("user-1"));
 
     expect(restored.status).toBe("called");
@@ -94,8 +96,26 @@ describe("visit wire format", () => {
       { actorId: UserId("user-1") },
     );
 
-    const restored = visitFromWire(visitToWire(visit), deps);
+    const restored = visitFromWire(visitToWire(visit, IDENTITY), deps);
     expect(restored.queueEntries).toHaveLength(2);
     expect(restored.stationsVisited).toBe(visit.stationsVisited);
+  });
+
+  it("withholds every identifying field when identity is not permitted", () => {
+    const wire = visitToWire(admitted(), { includeIdentity: false });
+
+    expect(wire.patient).toEqual({ name: "", hospitalNumber: null, phone: null });
+    expect(wire.identityWithheld).toBe(true);
+    // Nothing identifying survives anywhere in the serialised form.
+    const text = JSON.stringify(wire);
+    expect(text).not.toContain("Amara");
+    expect(text).not.toContain("HN-4471");
+    expect(text).not.toContain("2348012345678");
+  });
+
+  it("still rebuilds a working aggregate from a withheld projection", () => {
+    const restored = visitFromWire(visitToWire(admitted(), { includeIdentity: false }), deps);
+    expect(restored.currentEntry?.queueLabel).toBe("A-023");
+    expect(restored.patient.name).toBe("");
   });
 });

@@ -6,7 +6,7 @@ import {
   stageMillis,
   type QueueEntry,
 } from "./queue-entry.js";
-import { DEFAULT_PRIORITY, type Priority } from "./priority.js";
+import { DEFAULT_PRIORITY, isPriority, type Priority } from "./priority.js";
 import type { Clock } from "../shared/clock.js";
 import type { JourneyCode } from "../journey/journey-code.js";
 import type { VisitEvent } from "../events/visit-events.js";
@@ -100,6 +100,9 @@ export class Visit {
 
     const now = deps.clock.now();
     const priority = input.priority ?? DEFAULT_PRIORITY;
+    if (!isPriority(priority)) {
+      throw new ValidationError("That is not a recognised priority.", { priority });
+    }
 
     const visit = new Visit(
       {
@@ -125,11 +128,13 @@ export class Visit {
       branchId: input.branchId,
       actorId: context.actorId,
       occurredAt: now,
+      // No patient identity. The event log is append-only and outlives the
+      // visit, is read by auditors and administrators who may not hold
+      // `visit.view_identity`, and cannot be redacted later without rewriting
+      // history. The visit row holds the identity under its own access rules.
       payload: {
         journeyCode: input.journeyCode,
         workflowId: input.workflowId,
-        patientName: name,
-        hospitalNumber: input.patient.hospitalNumber,
         priority,
       },
     });
@@ -217,14 +222,50 @@ export class Visit {
     return entry;
   }
 
-  /** Announces the patient. Repeated calls are recalls. */
+  /**
+   * Announces a waiting patient for the first time.
+   *
+   * Strict: calling a patient who has already been called is refused rather
+   * than quietly treated as a recall. The two are separate permissions, and a
+   * retried or double-clicked Call that became a recall would both bypass
+   * `queue.recall` and announce the patient twice.
+   */
   call(
     calledBy: UserId,
     context: ActionContext = { actorId: null },
   ): QueueEntry {
-    const action = this.#state.status === "called" ? "recall" : "call";
+    if (this.#state.status === "called") {
+      throw new InvariantViolationError(
+        "VISIT_ALREADY_CALLED",
+        "This patient has already been called. Recall them instead.",
+        { visitId: this.#state.id },
+      );
+    }
+    return this.#announce("call", calledBy, context);
+  }
+
+  /** Announces a patient who was called and has not yet presented. */
+  recall(
+    calledBy: UserId,
+    context: ActionContext = { actorId: null },
+  ): QueueEntry {
+    if (this.#state.status !== "called") {
+      throw new InvariantViolationError(
+        "VISIT_NOT_CALLED",
+        "Only a patient who has been called can be recalled.",
+        { visitId: this.#state.id, status: this.#state.status },
+      );
+    }
+    return this.#announce("recall", calledBy, context);
+  }
+
+  #announce(
+    action: "call" | "recall",
+    calledBy: UserId,
+    context: ActionContext,
+  ): QueueEntry {
     const status = nextStatus(this.#state.status, action);
-    const entry = this.#requireOpenEntry("call");
+    const entry = this.#requireOpenEntry(action);
     this.#state.status = status;
 
     const now = this.#deps.clock.now();

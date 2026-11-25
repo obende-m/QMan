@@ -103,6 +103,8 @@ suite("persistence against real PostgreSQL", () => {
         "010_platform_login_throttle",
         "011_organization_lifecycle",
         "012_administrative_events_have_no_branch",
+        "013_visit_integrity",
+        "014_account_administration",
       ]);
     }, 120_000);
 
