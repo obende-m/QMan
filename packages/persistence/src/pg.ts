@@ -18,16 +18,22 @@
  */
 import type { Database, SqlExecutor } from "./sql.js";
 
+/**
+ * What a query resolves to. A single statement gives one result; a text holding
+ * several statements, such as a migration file, gives one result per statement.
+ */
+export type QueryResultLike = { rows: unknown[] } | ReadonlyArray<{ rows: unknown[] }>;
+
 /** The slice of a pooled client this adapter uses. */
 export interface PoolClientLike {
-  query(text: string, values?: readonly unknown[]): Promise<{ rows: unknown[] }>;
+  query(text: string, values?: readonly unknown[]): Promise<QueryResultLike>;
   /** `true` discards the connection instead of returning it to the pool. */
   release(destroy?: boolean): void;
 }
 
 /** The slice of a connection pool this adapter uses. */
 export interface PoolLike {
-  query(text: string, values?: readonly unknown[]): Promise<{ rows: unknown[] }>;
+  query(text: string, values?: readonly unknown[]): Promise<QueryResultLike>;
   connect(): Promise<PoolClientLike>;
 }
 
@@ -53,27 +59,42 @@ export interface PostgresOptions {
   readonly onQuery?: (event: QueryEvent) => void;
 }
 
+/**
+ * The rows of a query's final statement.
+ *
+ * A multi-statement text resolves to an array of results, which has no `rows`
+ * of its own. Reading it as a single result threw after the statements had
+ * succeeded, so the enclosing transaction rolled back work that was correct.
+ */
+function rowsOf(result: QueryResultLike): unknown[] {
+  if (Array.isArray(result)) {
+    const last = result[result.length - 1] as { rows?: unknown[] } | undefined;
+    return last?.rows ?? [];
+  }
+  return (result as { rows?: unknown[] }).rows ?? [];
+}
+
 function elapsed(startedAt: number): number {
   return Math.round((Date.now() - startedAt) * 1000) / 1000;
 }
 
 async function run<T>(
-  source: { query(text: string, values?: readonly unknown[]): Promise<{ rows: unknown[] }> },
+  source: { query(text: string, values?: readonly unknown[]): Promise<QueryResultLike> },
   sql: string,
   params: readonly unknown[],
   onQuery: ((event: QueryEvent) => void) | undefined,
 ): Promise<T[]> {
   const startedAt = Date.now();
   try {
-    const result = await source.query(sql, params);
+    const rows = rowsOf(await source.query(sql, params));
     onQuery?.({
       sql,
       parameterCount: params.length,
-      rowCount: result.rows.length,
+      rowCount: rows.length,
       durationMillis: elapsed(startedAt),
       failed: false,
     });
-    return result.rows as T[];
+    return rows as T[];
   } catch (error) {
     onQuery?.({
       sql,

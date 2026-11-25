@@ -198,4 +198,32 @@ describe("postgres adapter", () => {
     expect(JSON.stringify(events)).not.toContain("Amara");
     expect(JSON.stringify(events)).not.toContain("2348012345678");
   });
+
+  // A migration file is several statements in one text, and the driver answers
+  // it with one result per statement. With a logger attached, reading that as
+  // a single result threw after the statements had run, and the transaction
+  // rolled back a migration that had succeeded.
+  it("accepts a multi-statement result, with a logger attached, inside a transaction", async () => {
+    const multi: PoolLike = {
+      async query() {
+        return [{ rows: [] }, { rows: [{ n: 1 }] }];
+      },
+      async connect() {
+        return {
+          async query(text: string) {
+            return text.includes(";") ? [{ rows: [] }, { rows: [{ n: 1 }] }] : { rows: [] };
+          },
+          release() {},
+        };
+      },
+    };
+    const events: QueryEvent[] = [];
+    const db = createPostgresDatabase(multi, { onQuery: (event) => events.push(event) });
+
+    const rows = await db.transaction((tx) => tx.query("CREATE TABLE a (n int); SELECT 1 AS n;"));
+    expect(rows).toEqual([{ n: 1 }]);
+    expect(await db.query("SELECT 1; SELECT 1 AS n")).toEqual([{ n: 1 }]);
+    expect(events.every((e) => !e.failed)).toBe(true);
+    expect(events.find((e) => e.sql.startsWith("CREATE"))?.rowCount).toBe(1);
+  });
 });

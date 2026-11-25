@@ -441,11 +441,12 @@ browser ──► https://qman.vercel.app ──► /api/*  ──► https://qm
 3. The service is named `qman-api`, so that it is served at
    `https://qman-api.onrender.com`. If Render gives it a different address,
    change the rewrite destination in `apps/web/vercel.json` to match.
-4. If the log shows `self-signed certificate in certificate chain`, download the
-   CA certificate from Supabase (**Project Settings → Database → SSL
-   Configuration**), add it in Render as a **Secret File** named
-   `supabase-ca.crt`, and set `NODE_EXTRA_CA_CERTS=/etc/secrets/supabase-ca.crt`.
-   Do **not** set `DATABASE_SSL_INSECURE`.
+4. Supabase signs its certificates with its own root CA, which Node does not
+   trust by default (`self-signed certificate in certificate chain`). The
+   public CA is committed at `certs/supabase-ca-2021.crt`, and `render.yaml`
+   points `NODE_EXTRA_CA_CERTS` at it, so verification stays on. If Supabase
+   ever rotates it, replace that file with the one from **Project Settings →
+   Database → SSL Configuration**. Do **not** set `DATABASE_SSL_INSECURE`.
 5. Confirm `https://qman-api.onrender.com/api/health` returns 200.
 
 ### 10.3 Web: Vercel
@@ -459,7 +460,10 @@ browser ──► https://qman.vercel.app ──► /api/*  ──► https://qm
 
 ### 10.4 First run and smoke test
 
-Run §5 from your machine with `DATABASE_URL` set to the Supabase string, then
+Run §5 from your machine with `DATABASE_URL` set to the Supabase string,
+`NODE_EXTRA_CA_CERTS` set to the full path of `certs/supabase-ca-2021.crt`, and
+`QMAN_ALLOWED_ORIGINS` set to the Vercel address (the CLI loads the full
+configuration). Then
 the §6 smoke test using the Vercel address for both the web app and the API:
 `https://qman.vercel.app/api/health` should answer 200 through the rewrite.
 

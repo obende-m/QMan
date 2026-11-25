@@ -24,6 +24,11 @@ services:
         value: "22"
       - key: NODE_ENV
         value: production
+      # Supabase signs its database certificates with its own root CA, which
+      # Node does not ship. Trusting that one public CA keeps certificate
+      # verification on. Render checks the repository out at this path.
+      - key: NODE_EXTRA_CA_CERTS
+        value: /opt/render/project/src/certs/supabase-ca-2021.crt
       # Requests pass through two proxies: Vercel's rewrite, then Render's.
       - key: QMAN_TRUST_PROXY
         value: "2"
