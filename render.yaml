@@ -9,9 +9,10 @@ services:
   - type: web
     name: qman-api
     runtime: node
-    # A paid instance. The free tier sleeps when idle, which drops every live
-    # staff connection and delays the first request of the day.
-    plan: starter
+    # Free: sleeps after 15 minutes without a request and takes about a minute
+    # to wake. An open display board polls every few seconds and keeps it
+    # awake. Change to `starter` to remove the sleep; no code changes needed.
+    plan: free
     # Pick the region closest to your clinics, and create the Supabase project
     # in the matching region (Frankfurt ↔ Supabase eu-central-1).
     region: frankfurt
