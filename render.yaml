@@ -1,0 +1,35 @@
+# Render Blueprint for the QMan API.
+#
+# Render → New → Blueprint → select this repository. Render reads this file and
+# asks for the two values marked `sync: false`. The service name fixes the
+# address at https://qman-api.onrender.com, which apps/web/vercel.json forwards
+# /api to. If Render reports the name as taken, choose another and update the
+# rewrite destination in apps/web/vercel.json to match.
+services:
+  - type: web
+    name: qman-api
+    runtime: node
+    # A paid instance. The free tier sleeps when idle, which drops every live
+    # staff connection and delays the first request of the day.
+    plan: starter
+    # Pick the region closest to your clinics, and create the Supabase project
+    # in the matching region (Frankfurt ↔ Supabase eu-central-1).
+    region: frankfurt
+    branch: main
+    buildCommand: npm ci && npm run build -w @qman/api
+    startCommand: npm start -w @qman/api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # Requests pass through two proxies: Vercel's rewrite, then Render's.
+      - key: QMAN_TRUST_PROXY
+        value: "2"
+      # Supabase → Connect → Session pooler connection string.
+      - key: DATABASE_URL
+        sync: false
+      # The Vercel address exactly, e.g. https://qman.vercel.app (no trailing slash).
+      - key: QMAN_ALLOWED_ORIGINS
+        sync: false
