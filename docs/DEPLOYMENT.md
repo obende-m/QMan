@@ -102,7 +102,7 @@ Render builds from source and is the least fiddly of the three.
 3. **Runtime:** Node
 4. **Build Command:**
    ```
-   npm ci && npm run build -w @qman/api
+   npm ci --include=dev && npm run build -w @qman/api
    ```
 5. **Start Command:**
    ```
@@ -134,7 +134,7 @@ then continue to §5.
 3. **Root Directory:** `/` (the repository root).
 4. **Build Command:**
    ```
-   npm ci && npm run build -w @qman/api
+   npm ci --include=dev && npm run build -w @qman/api
    ```
 5. **Start Command:**
    ```

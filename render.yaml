@@ -17,7 +17,9 @@ services:
     # in the matching region (Frankfurt ↔ Supabase eu-central-1).
     region: frankfurt
     branch: main
-    buildCommand: npm ci && npm run build -w @qman/api
+    # --include=dev: with NODE_ENV=production npm skips devDependencies, and the
+    # build needs TypeScript and its type definitions.
+    buildCommand: npm ci --include=dev && npm run build -w @qman/api
     startCommand: npm start -w @qman/api
     healthCheckPath: /api/health
     envVars:
